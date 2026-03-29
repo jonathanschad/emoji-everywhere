@@ -14,9 +14,9 @@ export default defineContentScript({
     function start() {
       if (!settings.enabled || Object.keys(emojis).length === 0) return;
 
-      scanAndReplace(document.body, emojis, settings.emojiSize);
+      scanAndReplace(document.body, emojis);
 
-      observer = createObserver(emojis, settings.emojiSize);
+      observer = createObserver(emojis);
       observer.observe(document.body, {
         childList: true,
         subtree: true,

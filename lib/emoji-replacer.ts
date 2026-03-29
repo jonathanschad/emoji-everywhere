@@ -27,7 +27,7 @@ function shouldSkipNode(node: Node): boolean {
   return false;
 }
 
-function createEmojiImg(url: string, name: string, size: number): HTMLElement {
+function createEmojiImg(url: string, name: string): HTMLElement {
   const img = document.createElement("img");
   img.src = url;
   img.alt = `:${name}:`;
@@ -35,9 +35,10 @@ function createEmojiImg(url: string, name: string, size: number): HTMLElement {
   img.className = "slack-custom-emoji";
   img.style.cssText = `
     display: inline;
-    width: ${size}px;
-    height: ${size}px;
-    vertical-align: middle;
+    width: 1em;
+    height: 1em;
+    object-fit: contain;
+    vertical-align: -0.1em;
     margin: 0 1px;
   `;
   return img;
@@ -46,7 +47,6 @@ function createEmojiImg(url: string, name: string, size: number): HTMLElement {
 function processTextNode(
   textNode: Text,
   emojis: EmojiMap,
-  size: number,
 ): void {
   const text = textNode.textContent;
   if (!text || !EMOJI_PATTERN.test(text)) return;
@@ -72,7 +72,7 @@ function processTextNode(
       );
     }
 
-    fragment.appendChild(createEmojiImg(emojiUrl, emojiName, size));
+    fragment.appendChild(createEmojiImg(emojiUrl, emojiName));
     lastIndex = match.index + match[0].length;
   }
 
@@ -88,7 +88,6 @@ function processTextNode(
 export function scanAndReplace(
   root: Node,
   emojis: EmojiMap,
-  size: number,
 ): void {
   if (Object.keys(emojis).length === 0) return;
 
@@ -111,13 +110,12 @@ export function scanAndReplace(
   }
 
   for (const textNode of textNodes) {
-    processTextNode(textNode, emojis, size);
+    processTextNode(textNode, emojis);
   }
 }
 
 export function createObserver(
   emojis: EmojiMap,
-  size: number,
 ): MutationObserver {
   let pending = false;
   const pendingNodes: Set<Node> = new Set();
@@ -140,7 +138,7 @@ export function createObserver(
       requestAnimationFrame(() => {
         for (const node of pendingNodes) {
           if (node.isConnected) {
-            scanAndReplace(node, emojis, size);
+            scanAndReplace(node, emojis);
           }
         }
         pendingNodes.clear();
