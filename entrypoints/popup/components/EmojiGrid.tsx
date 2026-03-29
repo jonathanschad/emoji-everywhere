@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { getEmojis } from "@/lib/storage";
 import { resolveEmoji } from "@/lib/slack";
 import { loadCachedImages } from "@/lib/emoji-cache";
+import { searchEmojis } from "@/lib/emoji-search";
 import type { EmojiMap } from "@/lib/types";
 
 const BATCH_SIZE = 100;
@@ -18,14 +19,19 @@ export default function EmojiGrid() {
     getEmojis().then(setEmojis);
   }, []);
 
-  const filteredEntries = useMemo(() => {
-    const entries = Object.entries(emojis);
-    return search
-      ? entries.filter(([name]) =>
-          name.toLowerCase().includes(search.toLowerCase()),
-        )
-      : entries;
-  }, [emojis, search]);
+  const allResolved = useMemo(() => {
+    const results: { name: string; url: string }[] = [];
+    for (const name of Object.keys(emojis)) {
+      const url = resolveEmoji(name, emojis);
+      if (url) results.push({ name, url });
+    }
+    return results;
+  }, [emojis]);
+
+  const filteredEntries = useMemo(
+    () => (search ? searchEmojis(search, emojis) : allResolved),
+    [emojis, search, allResolved],
+  );
 
   useEffect(() => {
     setVisibleCount(BATCH_SIZE);
@@ -38,10 +44,7 @@ export default function EmojiGrid() {
   );
 
   useEffect(() => {
-    const urls = visibleEntries
-      .map(([name]) => resolveEmoji(name, emojis))
-      .filter((u): u is string => u !== null);
-
+    const urls = visibleEntries.map((e) => e.url);
     if (urls.length === 0) return;
 
     loadCachedImages(urls).then((cached) => {
@@ -52,7 +55,7 @@ export default function EmojiGrid() {
       });
       setCachedSrcs((prev) => ({ ...prev, ...newEntries }));
     });
-  }, [visibleEntries, emojis]);
+  }, [visibleEntries]);
 
   const loadMore = useCallback(() => {
     setVisibleCount((prev) =>
@@ -98,9 +101,7 @@ export default function EmojiGrid() {
         ref={scrollRef}
         className="grid grid-cols-8 gap-1 max-h-48 overflow-y-auto p-1"
       >
-        {visibleEntries.map(([name]) => {
-          const url = resolveEmoji(name, emojis);
-          if (!url) return null;
+        {visibleEntries.map(({ name, url }) => {
           const src = cachedSrcs[url] || url;
 
           return (

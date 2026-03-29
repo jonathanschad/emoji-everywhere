@@ -130,6 +130,7 @@ function shouldSkipNode(node: Node): boolean {
   while (current) {
     if (SKIP_TAGS.has(current.tagName)) return true;
     if (current.isContentEditable) return true;
+    if (current.dataset?.slackEmojiSkip) return true;
     current = current.parentElement;
   }
   return false;

@@ -1,5 +1,6 @@
 import { getEmojis, getSettings, watchEmojis, watchSettings } from "@/lib/storage";
 import { scanAndReplace, createObserver } from "@/lib/emoji-replacer";
+import { initAutocomplete, updateEmojis } from "@/lib/emoji-autocomplete";
 import type { EmojiMap, Settings } from "@/lib/types";
 
 export default defineContentScript({
@@ -10,6 +11,17 @@ export default defineContentScript({
     let emojis: EmojiMap = await getEmojis();
     let settings: Settings = await getSettings();
     let observer: MutationObserver | null = null;
+    let teardownAutocomplete: (() => void) | null = null;
+
+    function startAutocomplete() {
+      if (Object.keys(emojis).length === 0) return;
+      teardownAutocomplete = initAutocomplete(emojis);
+    }
+
+    function stopAutocomplete() {
+      teardownAutocomplete?.();
+      teardownAutocomplete = null;
+    }
 
     function start() {
       if (!settings.enabled || Object.keys(emojis).length === 0) return;
@@ -21,11 +33,15 @@ export default defineContentScript({
         childList: true,
         subtree: true,
       });
+
+      stopAutocomplete();
+      startAutocomplete();
     }
 
     function stop() {
       observer?.disconnect();
       observer = null;
+      stopAutocomplete();
     }
 
     function restart() {
@@ -37,6 +53,7 @@ export default defineContentScript({
 
     watchEmojis((newEmojis) => {
       emojis = newEmojis;
+      updateEmojis(newEmojis);
       restart();
     });
 
