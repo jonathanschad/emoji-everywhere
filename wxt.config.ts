@@ -6,7 +6,10 @@ const env = loadEnv("development", __dirname, "");
 const devServerPort = parseInt(env.DEV_SERVER_PORT || "3000", 10);
 
 export default defineConfig({
-  modules: ["@wxt-dev/module-react"],
+  modules: ["@wxt-dev/module-react", "@wxt-dev/auto-icons"],
+  autoIcons: {
+    developmentIndicator: false,
+  },
   dev: {
     server: {
       port: devServerPort,
