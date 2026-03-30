@@ -6,6 +6,7 @@ export interface Settings {
   refreshInterval: number;
   enabled: boolean;
   emojiSize: number;
+  slackClientId: string;
 }
 
 export interface SlackSource {
@@ -41,6 +42,7 @@ export interface SourceSummary {
 export interface ExtensionStatus {
   sources: SourceSummary[];
   totalEmojiCount: number;
+  duplicateCount: number;
 }
 
 export type MessageType =
@@ -54,8 +56,11 @@ export type MessageType =
   | { type: "OAUTH_COMPLETE"; success: boolean; error?: string }
   | { type: "EMOJIS_UPDATED" };
 
+export const EMOJI_REF_PREFIX = "ref:";
+
 export const DEFAULT_SETTINGS: Settings = {
   refreshInterval: 30,
   enabled: true,
   emojiSize: 20,
+  slackClientId: "",
 };

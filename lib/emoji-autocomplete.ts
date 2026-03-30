@@ -1,5 +1,6 @@
 import type { EmojiMap } from "./types";
 import { searchEmojis } from "./emoji-search";
+import { resolveImageUrl, TRANSPARENT_PIXEL } from "./emoji-image-resolver";
 
 const CONTAINER_ID = "slack-emoji-autocomplete";
 const MAX_SUGGESTIONS = 8;
@@ -217,9 +218,10 @@ function renderSuggestions(container: HTMLElement): void {
     `;
 
     const img = document.createElement("img");
-    img.src = match.url;
+    img.src = TRANSPARENT_PIXEL;
     img.alt = `:${match.name}:`;
     img.style.cssText = "width: 22px; height: 22px; object-fit: contain; flex-shrink: 0;";
+    resolveImageUrl(match.url).then((resolved) => { img.src = resolved; });
 
     const nameSpan = document.createElement("span");
     nameSpan.textContent = `:${match.name}:`;

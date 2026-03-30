@@ -1,7 +1,11 @@
 import type { EmojiMap } from "./types";
 
-const SLACK_CLIENT_ID = import.meta.env.VITE_SLACK_CLIENT_ID;
+const DEFAULT_SLACK_CLIENT_ID = import.meta.env.VITE_SLACK_CLIENT_ID;
 const SLACK_API = "https://slack.com/api";
+
+export function getEffectiveClientId(override?: string): string {
+  return override?.trim() || DEFAULT_SLACK_CLIENT_ID;
+}
 
 function base64UrlEncode(bytes: Uint8Array): string {
   const str = String.fromCharCode(...bytes);
@@ -23,9 +27,10 @@ export async function generateCodeChallenge(verifier: string): Promise<string> {
 export function getAuthorizeUrl(
   redirectUri: string,
   codeChallenge: string,
+  clientId?: string,
 ): string {
   const params = new URLSearchParams({
-    client_id: SLACK_CLIENT_ID,
+    client_id: getEffectiveClientId(clientId),
     scope: "emoji:read",
     redirect_uri: redirectUri,
     code_challenge: codeChallenge,
@@ -38,12 +43,13 @@ export async function exchangeCodeForToken(
   code: string,
   redirectUri: string,
   codeVerifier: string,
+  clientId?: string,
 ): Promise<{ accessToken: string; teamName?: string }> {
   const res = await fetch(`${SLACK_API}/oauth.v2.user.access`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
-      client_id: SLACK_CLIENT_ID,
+      client_id: getEffectiveClientId(clientId),
       code,
       redirect_uri: redirectUri,
       code_verifier: codeVerifier,
@@ -143,4 +149,17 @@ export function resolveEmoji(
 
   if (!current || current.startsWith("alias:")) return null;
   return current;
+}
+
+/**
+ * Resolve all aliases in an emoji map, returning a flat map where every
+ * entry points to an actual URL. Broken/circular aliases are dropped.
+ */
+export function resolveAllEmojis(rawEmojis: EmojiMap): EmojiMap {
+  const resolved: EmojiMap = {};
+  for (const name of Object.keys(rawEmojis)) {
+    const url = resolveEmoji(name, rawEmojis);
+    if (url) resolved[name] = url;
+  }
+  return resolved;
 }

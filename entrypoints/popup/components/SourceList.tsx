@@ -1,7 +1,6 @@
 import { useState } from "react";
 import type { SourceSummary } from "@/lib/types";
-import { getSource } from "@/lib/storage";
-import { resolveEmoji } from "@/lib/slack";
+import { getEmojiImageData } from "@/lib/storage";
 import EmojiGrid from "./EmojiGrid";
 
 interface Props {
@@ -64,12 +63,10 @@ function SourceCard({
     setError(null);
 
     try {
-      const fullSource = await getSource(source.id);
-      if (!fullSource) throw new Error("Source not found");
+      const imageData = await getEmojiImageData(source.id);
+      if (!imageData) throw new Error("Source not found");
 
-      const entries = Object.keys(fullSource.emojis).filter(
-        (name) => resolveEmoji(name, fullSource.emojis) !== null,
-      );
+      const entries = Object.entries(imageData);
       setExportProgress({ current: 0, total: entries.length });
 
       const { BlobWriter, ZipWriter, BlobReader } = await import(
@@ -80,8 +77,7 @@ function SourceCard({
       });
 
       let completed = 0;
-      for (const name of entries) {
-        const url = resolveEmoji(name, fullSource.emojis)!;
+      for (const [name, url] of entries) {
         try {
           const resp = await fetch(url);
           const blob = await resp.blob();

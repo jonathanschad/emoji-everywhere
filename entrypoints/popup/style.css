@@ -1,6 +1,6 @@
 @import "tailwindcss";
 
 body {
-  min-width: 380px;
+  width: 380px;
   min-height: 300px;
 }

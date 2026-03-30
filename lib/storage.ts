@@ -1,6 +1,6 @@
-import { storage } from "#imports";
+import { storage, browser } from "#imports";
 import type { EmojiMap, EmojiSource, Settings } from "./types";
-import { DEFAULT_SETTINGS } from "./types";
+import { DEFAULT_SETTINGS, EMOJI_REF_PREFIX } from "./types";
 
 const keys = {
   sources: storage.defineItem<EmojiSource[]>("local:emojiSources", {
@@ -56,9 +56,12 @@ export async function updateSource(
 
 export async function removeSource(id: string): Promise<void> {
   const sources = await getSources();
+  const source = sources.find((s) => s.id === id);
+  const emojiNames = source ? Object.keys(source.emojis) : [];
   const filtered = sources.filter((s) => s.id !== id);
   await keys.sources.setValue(filtered);
   await persistMerged(filtered);
+  await removeEmojiImageData(id, emojiNames);
 }
 
 export async function getMergedEmojis(): Promise<EmojiMap> {
@@ -90,4 +93,80 @@ export function watchSources(
   callback: (newVal: EmojiSource[], oldVal: EmojiSource[]) => void,
 ): () => void {
   return keys.sources.watch(callback);
+}
+
+// ---------------------------------------------------------------------------
+// Per-image storage — same format for Slack and ZIP sources
+// Key format: emojiImg:{sourceId}:{name} → image URL (remote or data URL)
+// ---------------------------------------------------------------------------
+
+const IMG_KEY_PREFIX = "emojiImg:";
+
+/** Read a single emoji image from storage. */
+export async function getEmojiImage(
+  sourceId: string,
+  name: string,
+): Promise<string | null> {
+  const key = `${IMG_KEY_PREFIX}${sourceId}:${name}`;
+  const result = await browser.storage.local.get(key);
+  return (result[key] as string) ?? null;
+}
+
+/**
+ * Bulk-read all images for a source (used by popup grid and export).
+ * Derives the key list from the source's emoji ref map.
+ */
+export async function getEmojiImageData(
+  sourceId: string,
+): Promise<EmojiMap | null> {
+  const source = (await getSources()).find((s) => s.id === sourceId);
+  if (!source) return null;
+
+  const names = Object.keys(source.emojis);
+  if (names.length === 0) return null;
+
+  const storageKeys = names.map((n) => `${IMG_KEY_PREFIX}${sourceId}:${n}`);
+  const result = await browser.storage.local.get(storageKeys);
+
+  const images: EmojiMap = {};
+  for (const name of names) {
+    const val = result[`${IMG_KEY_PREFIX}${sourceId}:${name}`];
+    if (val) images[name] = val;
+  }
+  return Object.keys(images).length > 0 ? images : null;
+}
+
+/** Write all images for a source as individual keys (single storage call). */
+export async function setEmojiImageData(
+  sourceId: string,
+  images: EmojiMap,
+): Promise<void> {
+  const items: Record<string, string> = {};
+  for (const [name, url] of Object.entries(images)) {
+    items[`${IMG_KEY_PREFIX}${sourceId}:${name}`] = url;
+  }
+  await browser.storage.local.set(items);
+}
+
+/** Remove all image keys for a source. */
+export async function removeEmojiImageData(
+  sourceId: string,
+  emojiNames: string[],
+): Promise<void> {
+  if (emojiNames.length === 0) return;
+  await browser.storage.local.remove(
+    emojiNames.map((n) => `${IMG_KEY_PREFIX}${sourceId}:${n}`),
+  );
+}
+
+/** Build a ref map: name → "ref:{sourceId}/{name}" */
+export function buildEmojiRefs(
+  sourceId: string,
+  emojiNames: string[],
+): EmojiMap {
+  const refs: EmojiMap = {};
+  for (const name of emojiNames) {
+    refs[name] = `${EMOJI_REF_PREFIX}${sourceId}/${name}`;
+  }
+  return refs;
 }

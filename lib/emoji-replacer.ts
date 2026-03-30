@@ -1,5 +1,6 @@
 import type { EmojiMap } from "./types";
 import { resolveEmoji } from "./slack";
+import { resolveImageUrl, TRANSPARENT_PIXEL } from "./emoji-image-resolver";
 
 const EMOJI_PATTERN = /:([\w+-]+):/g;
 
@@ -136,9 +137,9 @@ function shouldSkipNode(node: Node): boolean {
   return false;
 }
 
-function createEmojiImg(url: string, name: string): HTMLElement {
+function createEmojiImg(ref: string, name: string): HTMLElement {
   const img = document.createElement("img");
-  img.src = url;
+  img.src = TRANSPARENT_PIXEL;
   img.alt = `:${name}:`;
   img.className = "slack-custom-emoji";
   img.style.cssText = `
@@ -149,6 +150,11 @@ function createEmojiImg(url: string, name: string): HTMLElement {
     vertical-align: -0.1em;
     margin: 0 1px;
   `;
+
+  resolveImageUrl(ref).then((resolved) => {
+    if (img.isConnected) img.src = resolved;
+  });
+
   attachPopoverListeners(img);
   return img;
 }

@@ -14,7 +14,10 @@ export async function preCacheImages(emojis: EmojiMap): Promise<void> {
   const cache = await caches.open(CACHE_NAME);
   const imageUrls = [
     ...new Set(
-      Object.values(emojis).filter((url) => !url.startsWith("alias:")),
+      Object.values(emojis).filter(
+        (url) =>
+          url.startsWith("https://") || url.startsWith("http://"),
+      ),
     ),
   ];
 

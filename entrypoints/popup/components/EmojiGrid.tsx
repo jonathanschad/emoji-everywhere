@@ -1,8 +1,7 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { getSource } from "@/lib/storage";
-import { resolveEmoji } from "@/lib/slack";
-import { loadCachedImages } from "@/lib/emoji-cache";
 import { searchEmojis } from "@/lib/emoji-search";
+import { resolveImageUrl, TRANSPARENT_PIXEL } from "@/lib/emoji-image-resolver";
 import type { EmojiMap } from "@/lib/types";
 
 const BATCH_SIZE = 100;
@@ -15,7 +14,6 @@ export default function EmojiGrid({ sourceId }: Props) {
   const [emojis, setEmojis] = useState<EmojiMap>({});
   const [search, setSearch] = useState("");
   const [visibleCount, setVisibleCount] = useState(BATCH_SIZE);
-  const [cachedSrcs, setCachedSrcs] = useState<Record<string, string>>({});
   const sentinelRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -25,18 +23,13 @@ export default function EmojiGrid({ sourceId }: Props) {
     });
   }, [sourceId]);
 
-  const allResolved = useMemo(() => {
-    const results: { name: string; url: string }[] = [];
-    for (const name of Object.keys(emojis)) {
-      const url = resolveEmoji(name, emojis);
-      if (url) results.push({ name, url });
-    }
-    return results;
+  const allEntries = useMemo(() => {
+    return Object.entries(emojis).map(([name, ref]) => ({ name, url: ref }));
   }, [emojis]);
 
   const filteredEntries = useMemo(
-    () => (search ? searchEmojis(search, emojis) : allResolved),
-    [emojis, search, allResolved],
+    () => (search ? searchEmojis(search, emojis) : allEntries),
+    [emojis, search, allEntries],
   );
 
   useEffect(() => {
@@ -48,20 +41,6 @@ export default function EmojiGrid({ sourceId }: Props) {
     () => filteredEntries.slice(0, visibleCount),
     [filteredEntries, visibleCount],
   );
-
-  useEffect(() => {
-    const urls = visibleEntries.map((e) => e.url);
-    if (urls.length === 0) return;
-
-    loadCachedImages(urls).then((cached) => {
-      if (cached.size === 0) return;
-      const newEntries: Record<string, string> = {};
-      cached.forEach((blobUrl, originalUrl) => {
-        newEntries[originalUrl] = blobUrl;
-      });
-      setCachedSrcs((prev) => ({ ...prev, ...newEntries }));
-    });
-  }, [visibleEntries]);
 
   const loadMore = useCallback(() => {
     setVisibleCount((prev) =>
@@ -99,7 +78,7 @@ export default function EmojiGrid({ sourceId }: Props) {
         type="text"
         value={search}
         onChange={(e) => setSearch(e.target.value)}
-        placeholder={`Search ${allResolved.length} emojis...`}
+        placeholder={`Search ${allEntries.length} emojis...`}
         className="w-full px-3 py-1.5 border border-gray-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
       />
 
@@ -107,24 +86,9 @@ export default function EmojiGrid({ sourceId }: Props) {
         ref={scrollRef}
         className="grid grid-cols-8 gap-1 max-h-36 overflow-y-auto p-1"
       >
-        {visibleEntries.map(({ name, url }) => {
-          const src = cachedSrcs[url] || url;
-
-          return (
-            <button
-              key={name}
-              className="w-8 h-8 flex items-center justify-center rounded hover:bg-gray-100 transition-colors group relative cursor-pointer"
-              title={`:${name}:`}
-            >
-              <img
-                src={src}
-                alt={`:${name}:`}
-                className="w-5 h-5"
-                loading="lazy"
-              />
-            </button>
-          );
-        })}
+        {visibleEntries.map(({ name, url }) => (
+          <LazyEmojiCell key={name} name={name} emojiRef={url} />
+        ))}
 
         {hasMore && <div ref={sentinelRef} className="col-span-8 h-1" />}
       </div>
@@ -135,5 +99,31 @@ export default function EmojiGrid({ sourceId }: Props) {
         </p>
       )}
     </div>
+  );
+}
+
+function LazyEmojiCell({ name, emojiRef }: { name: string; emojiRef: string }) {
+  const [src, setSrc] = useState(TRANSPARENT_PIXEL);
+
+  useEffect(() => {
+    let cancelled = false;
+    resolveImageUrl(emojiRef).then((resolved) => {
+      if (!cancelled) setSrc(resolved);
+    });
+    return () => { cancelled = true; };
+  }, [emojiRef]);
+
+  return (
+    <button
+      className="w-8 h-8 flex items-center justify-center rounded hover:bg-gray-100 transition-colors group relative cursor-pointer"
+      title={`:${name}:`}
+    >
+      <img
+        src={src}
+        alt={`:${name}:`}
+        className="w-5 h-5"
+        loading="lazy"
+      />
+    </button>
   );
 }

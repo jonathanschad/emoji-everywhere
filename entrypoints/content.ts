@@ -1,6 +1,7 @@
 import { getMergedEmojis, getSettings, watchMergedEmojis, watchSettings } from "@/lib/storage";
 import { scanAndReplace, createObserver } from "@/lib/emoji-replacer";
 import { initAutocomplete, updateEmojis } from "@/lib/emoji-autocomplete";
+import { clearResolverCache } from "@/lib/emoji-image-resolver";
 import type { EmojiMap, Settings } from "@/lib/types";
 
 export default defineContentScript({
@@ -53,6 +54,7 @@ export default defineContentScript({
 
     watchMergedEmojis((newEmojis) => {
       emojis = newEmojis;
+      clearResolverCache();
       updateEmojis(newEmojis);
       restart();
     });

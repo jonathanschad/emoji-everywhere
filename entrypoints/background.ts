@@ -5,6 +5,9 @@ import {
   updateSource,
   removeSource,
   getSettings,
+  setEmojiImageData,
+  removeEmojiImageData,
+  buildEmojiRefs,
 } from "@/lib/storage";
 import {
   generateCodeVerifier,
@@ -12,6 +15,7 @@ import {
   getAuthorizeUrl,
   exchangeCodeForToken,
   fetchEmojis,
+  resolveAllEmojis,
 } from "@/lib/slack";
 import { preCacheImages, clearImageCache } from "@/lib/emoji-cache";
 import type { EmojiSource, ExtensionStatus, SlackSource, SourceSummary, EmojiMap } from "@/lib/types";
@@ -31,6 +35,18 @@ function summarizeSource(source: EmojiSource): SourceSummary {
     lastRefresh: source.type === "slack" ? source.lastRefresh : source.addedAt,
     error: source.type === "slack" ? source.error : null,
   };
+}
+
+/**
+ * Shared import logic: stores resolved images as individual keys and
+ * returns a lightweight ref map for the source's emojis field.
+ */
+async function storeEmojis(
+  sourceId: string,
+  resolvedImages: EmojiMap,
+): Promise<EmojiMap> {
+  await setEmojiImageData(sourceId, resolvedImages);
+  return buildEmojiRefs(sourceId, Object.keys(resolvedImages));
 }
 
 async function startOAuthFlow(): Promise<{ success: boolean; error?: string }> {
@@ -101,15 +117,25 @@ async function refreshSourceEmojis(sourceId: string): Promise<void> {
   if (!source || source.type !== "slack") return;
 
   try {
-    const emojis = await fetchEmojis(source.token);
+    const rawEmojis = await fetchEmojis(source.token);
+    const resolvedImages = resolveAllEmojis(rawEmojis);
+
+    const oldNames = Object.keys(source.emojis);
+    const refs = await storeEmojis(sourceId, resolvedImages);
+
+    const removedNames = oldNames.filter((n) => !(n in refs));
+    if (removedNames.length > 0) {
+      await removeEmojiImageData(sourceId, removedNames);
+    }
+
     await updateSource(sourceId, (s) => ({
       ...s,
-      emojis,
+      emojis: refs,
       lastRefresh: Date.now(),
       error: null,
     }) as EmojiSource);
 
-    preCacheImages(emojis).catch(() => {});
+    preCacheImages(resolvedImages).catch(() => {});
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     await updateSource(sourceId, (s) => ({
@@ -130,28 +156,35 @@ async function refreshAllSlackSources(): Promise<void> {
 }
 
 async function importZip(name: string, emojis: EmojiMap): Promise<void> {
+  const id = generateId();
+  const refs = await storeEmojis(id, emojis);
+
   await addSource({
     type: "zip",
-    id: generateId(),
+    id,
     name,
-    emojis,
+    emojis: refs,
     addedAt: Date.now(),
   });
-
-  preCacheImages(emojis).catch(() => {});
 }
 
 async function getStatus(): Promise<ExtensionStatus> {
   const sources = await getSources();
   let totalEmojiCount = 0;
+  const allNames = new Set<string>();
 
   const summaries = sources.map((s) => {
     const summary = summarizeSource(s);
     totalEmojiCount += summary.emojiCount;
+    for (const name of Object.keys(s.emojis)) {
+      allNames.add(name);
+    }
     return summary;
   });
 
-  return { sources: summaries, totalEmojiCount };
+  const duplicateCount = totalEmojiCount - allNames.size;
+
+  return { sources: summaries, totalEmojiCount, duplicateCount };
 }
 
 async function setupAlarm(): Promise<void> {
