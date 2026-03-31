@@ -126,6 +126,7 @@ function getCaretCoordsForInput(
     "boxSizing", "lineHeight",
   ] as const;
 
+  mirror.setAttribute("autocomplete", "off");
   mirror.style.position = "absolute";
   mirror.style.visibility = "hidden";
   mirror.style.whiteSpace = "pre-wrap";

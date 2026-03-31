@@ -12,6 +12,9 @@ const keys = {
   settings: storage.defineItem<Settings>("local:settings", {
     fallback: DEFAULT_SETTINGS,
   }),
+  excludedDomains: storage.defineItem<string[]>("local:excludedDomains", {
+    fallback: [],
+  }),
 };
 
 function buildMergedEmojis(sources: EmojiSource[]): EmojiMap {
@@ -157,6 +160,34 @@ export async function removeEmojiImageData(
   await browser.storage.local.remove(
     emojiNames.map((n) => `${IMG_KEY_PREFIX}${sourceId}:${n}`),
   );
+}
+
+// ---------------------------------------------------------------------------
+// Excluded domains
+// ---------------------------------------------------------------------------
+
+export async function getExcludedDomains(): Promise<string[]> {
+  return keys.excludedDomains.getValue();
+}
+
+export async function addExcludedDomain(domain: string): Promise<void> {
+  const domains = await getExcludedDomains();
+  const normalized = domain.toLowerCase().trim();
+  if (!normalized || domains.includes(normalized)) return;
+  domains.push(normalized);
+  await keys.excludedDomains.setValue(domains);
+}
+
+export async function removeExcludedDomain(domain: string): Promise<void> {
+  const domains = await getExcludedDomains();
+  const filtered = domains.filter((d) => d !== domain.toLowerCase().trim());
+  await keys.excludedDomains.setValue(filtered);
+}
+
+export function watchExcludedDomains(
+  callback: (newVal: string[], oldVal: string[]) => void,
+): () => void {
+  return keys.excludedDomains.watch(callback);
 }
 
 /** Build a ref map: name → "ref:{sourceId}/{name}" */

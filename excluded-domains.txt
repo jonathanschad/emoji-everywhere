@@ -1,0 +1,6 @@
+# Predefined website exclusions for Emoji Everywhere.
+# One domain per line. Subdomains are automatically matched.
+# Lines starting with # are comments and blank lines are ignored.
+
+# Disabled because Notion uses content-edible extensively. This is not supported.
+notion.so

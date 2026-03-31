@@ -3,7 +3,6 @@ export interface EmojiMap {
 }
 
 export interface Settings {
-  refreshInterval: number;
   enabled: boolean;
   emojiSize: number;
   slackClientId: string;
@@ -54,12 +53,15 @@ export type MessageType =
   | { type: "IMPORT_ZIP"; name: string; emojis: EmojiMap }
   | { type: "STATUS_RESPONSE"; status: ExtensionStatus }
   | { type: "OAUTH_COMPLETE"; success: boolean; error?: string }
-  | { type: "EMOJIS_UPDATED" };
+  | { type: "EMOJIS_UPDATED" }
+  | { type: "ADD_EXCLUDED_DOMAIN"; domain: string }
+  | { type: "REMOVE_EXCLUDED_DOMAIN"; domain: string }
+  | { type: "GET_EXCLUDED_DOMAINS" }
+  | { type: "REFRESH_IF_STALE" };
 
 export const EMOJI_REF_PREFIX = "ref:";
 
 export const DEFAULT_SETTINGS: Settings = {
-  refreshInterval: 30,
   enabled: true,
   emojiSize: 20,
   slackClientId: "",

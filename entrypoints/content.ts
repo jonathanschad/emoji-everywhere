@@ -1,8 +1,15 @@
-import { getMergedEmojis, getSettings, watchMergedEmojis, watchSettings } from "@/lib/storage";
+import { getMergedEmojis, getSettings, getExcludedDomains, watchMergedEmojis, watchSettings, watchExcludedDomains } from "@/lib/storage";
 import { scanAndReplace, createObserver } from "@/lib/emoji-replacer";
 import { initAutocomplete, updateEmojis } from "@/lib/emoji-autocomplete";
 import { clearResolverCache } from "@/lib/emoji-image-resolver";
 import type { EmojiMap, Settings } from "@/lib/types";
+
+function isDomainExcluded(excludedDomains: string[]): boolean {
+  const hostname = window.location.hostname.toLowerCase();
+  return excludedDomains.some(
+    (d) => hostname === d || hostname.endsWith(`.${d}`),
+  );
+}
 
 export default defineContentScript({
   matches: ["<all_urls>"],
@@ -11,6 +18,7 @@ export default defineContentScript({
   async main() {
     let emojis: EmojiMap = await getMergedEmojis();
     let settings: Settings = await getSettings();
+    let excludedDomains: string[] = await getExcludedDomains();
     let observer: MutationObserver | null = null;
     let teardownAutocomplete: (() => void) | null = null;
 
@@ -24,8 +32,12 @@ export default defineContentScript({
       teardownAutocomplete = null;
     }
 
+    function isActive() {
+      return settings.enabled && !isDomainExcluded(excludedDomains);
+    }
+
     function start() {
-      if (!settings.enabled || Object.keys(emojis).length === 0) return;
+      if (!isActive() || Object.keys(emojis).length === 0) return;
 
       scanAndReplace(document.body, emojis);
 
@@ -52,6 +64,8 @@ export default defineContentScript({
 
     start();
 
+    browser.runtime.sendMessage({ type: "REFRESH_IF_STALE" }).catch(() => {});
+
     watchMergedEmojis((newEmojis) => {
       emojis = newEmojis;
       clearResolverCache();
@@ -66,6 +80,18 @@ export default defineContentScript({
       if (!settings.enabled && wasEnabled) {
         stop();
       } else if (settings.enabled) {
+        restart();
+      }
+    });
+
+    watchExcludedDomains((newDomains) => {
+      const wasExcluded = isDomainExcluded(excludedDomains);
+      excludedDomains = newDomains;
+      const isNowExcluded = isDomainExcluded(excludedDomains);
+
+      if (isNowExcluded && !wasExcluded) {
+        stop();
+      } else if (!isNowExcluded && wasExcluded) {
         restart();
       }
     });

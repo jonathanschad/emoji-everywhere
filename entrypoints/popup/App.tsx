@@ -4,6 +4,7 @@ import SourceList from "./components/SourceList";
 import AddSource from "./components/AddSource";
 import ZipImport from "./components/ZipImport";
 import SettingsPage from "./components/SettingsPage";
+import ExcludedDomains from "./components/ExcludedDomains";
 
 const isImportMode = new URLSearchParams(window.location.search).get("mode") === "import";
 
@@ -18,7 +19,10 @@ export default function App() {
 function PopupMain() {
   const [status, setStatus] = useState<ExtensionStatus | null>(null);
   const [loading, setLoading] = useState(true);
-  const [page, setPage] = useState<"main" | "settings">("main");
+  const [page, setPage] = useState<"main" | "settings" | "excluded">("main");
+  const [currentDomain, setCurrentDomain] = useState<string | null>(null);
+  const [domainExcluded, setDomainExcluded] = useState(false);
+  const [excludeLoading, setExcludeLoading] = useState(false);
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -39,8 +43,32 @@ function PopupMain() {
     refreshStatus();
   }, [refreshStatus]);
 
+  useEffect(() => {
+    (async () => {
+      try {
+        const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
+        if (tab?.url) {
+          const hostname = new URL(tab.url).hostname.toLowerCase();
+          if (hostname) {
+            setCurrentDomain(hostname);
+            const response = await browser.runtime.sendMessage({ type: "GET_EXCLUDED_DOMAINS" });
+            if (response?.domains) {
+              setDomainExcluded(
+                response.domains.some((d: string) => hostname === d || hostname.endsWith(`.${d}`)),
+              );
+            }
+          }
+        }
+      } catch {}
+    })();
+  }, []);
+
   if (page === "settings") {
     return <SettingsPage onBack={() => setPage("main")} />;
+  }
+
+  if (page === "excluded") {
+    return <ExcludedDomains onBack={() => setPage("main")} />;
   }
 
   if (loading) {
@@ -51,10 +79,35 @@ function PopupMain() {
     );
   }
 
+  const handleExcludeToggle = async () => {
+    if (!currentDomain) return;
+    setExcludeLoading(true);
+    if (domainExcluded) {
+      await browser.runtime.sendMessage({ type: "REMOVE_EXCLUDED_DOMAIN", domain: currentDomain });
+      setDomainExcluded(false);
+    } else {
+      await browser.runtime.sendMessage({ type: "ADD_EXCLUDED_DOMAIN", domain: currentDomain });
+      setDomainExcluded(true);
+    }
+    setExcludeLoading(false);
+  };
+
   const hasSources = (status?.sources.length ?? 0) > 0;
 
   return (
     <div className="p-4 space-y-4">
+      {domainExcluded && currentDomain && (
+        <div className="flex items-center gap-2.5 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2.5">
+          <svg className="w-5 h-5 text-amber-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
+          </svg>
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-amber-800">Disabled on this site</p>
+            <p className="text-xs text-amber-600 truncate">{currentDomain}</p>
+          </div>
+        </div>
+      )}
+
       <div className="flex items-start justify-between">
         <div>
           <h1 className="text-lg font-bold text-gray-900">
@@ -111,6 +164,43 @@ function PopupMain() {
           <AddSource onStatusChange={refreshStatus} inline />
         </div>
       )}
+
+      <div className="border-t border-gray-200 pt-3 flex gap-2">
+        {currentDomain && (
+          <button
+            onClick={handleExcludeToggle}
+            disabled={excludeLoading}
+            className={`flex-1 min-w-0 flex items-center justify-center gap-1.5 px-3 py-2 text-sm rounded-lg border transition-colors cursor-pointer ${
+              domainExcluded
+                ? "border-green-300 bg-green-50 text-green-700 hover:bg-green-100"
+                : "border-gray-200 bg-gray-50 text-gray-700 hover:bg-gray-100"
+            }`}
+            title={domainExcluded ? `Re-enable on ${currentDomain}` : `Disable on ${currentDomain}`}
+          >
+            {domainExcluded ? (
+              <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+              </svg>
+            ) : (
+              <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
+              </svg>
+            )}
+            <span className="truncate min-w-0">
+              {domainExcluded ? `Re-enable on ${currentDomain}` : `Disable on ${currentDomain}`}
+            </span>
+          </button>
+        )}
+        <button
+          onClick={() => setPage("excluded")}
+          className="shrink-0 w-9 h-9 flex items-center justify-center rounded-lg border border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100 transition-colors cursor-pointer"
+          title="Manage excluded domains"
+        >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h7" />
+          </svg>
+        </button>
+      </div>
     </div>
   );
 }
