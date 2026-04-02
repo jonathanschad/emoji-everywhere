@@ -1,11 +1,11 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import type { SourceSummary } from "@/lib/types";
 import { getEmojiImageData } from "@/lib/storage";
 import EmojiGrid from "./EmojiGrid";
 
 interface Props {
   sources: SourceSummary[];
-  onStatusChange: () => void;
+  onStatusChange: () => void | Promise<void>;
 }
 
 export default function SourceList({ sources, onStatusChange }: Props) {
@@ -27,7 +27,7 @@ function SourceCard({
   onStatusChange,
 }: {
   source: SourceSummary;
-  onStatusChange: () => void;
+  onStatusChange: () => void | Promise<void>;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -36,6 +36,50 @@ function SourceCard({
     total: number;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [editName, setEditName] = useState(source.name);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const savingRef = useRef(false);
+  const cancelledRef = useRef(false);
+
+  useEffect(() => {
+    if (editing) {
+      cancelledRef.current = false;
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    }
+  }, [editing]);
+
+  const commitRename = async () => {
+    if (savingRef.current || cancelledRef.current) {
+      cancelledRef.current = false;
+      return;
+    }
+    const trimmed = editName.trim();
+    if (!trimmed || trimmed === source.name) {
+      setEditName(source.name);
+      setEditing(false);
+      return;
+    }
+    savingRef.current = true;
+    try {
+      const resp = await browser.runtime.sendMessage({
+        type: "RENAME_SOURCE",
+        sourceId: source.id,
+        name: trimmed,
+      });
+      if (resp?.success) {
+        await onStatusChange();
+      } else {
+        setEditName(source.name);
+      }
+    } catch {
+      setEditName(source.name);
+    } finally {
+      savingRef.current = false;
+      setEditing(false);
+    }
+  };
 
   const handleRefresh = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -128,9 +172,31 @@ function SourceCard({
         <SourceIcon type={source.type} />
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
-            <span className="text-sm font-medium text-gray-900 truncate">
-              {source.name}
-            </span>
+            {editing ? (
+              <input
+                ref={inputRef}
+                value={editName}
+                onChange={(e) => setEditName(e.target.value)}
+                onBlur={commitRename}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    inputRef.current?.blur();
+                  }
+                  if (e.key === "Escape") {
+                    cancelledRef.current = true;
+                    setEditName(source.name);
+                    inputRef.current?.blur();
+                  }
+                }}
+                onClick={(e) => e.stopPropagation()}
+                className="text-sm font-medium text-gray-900 bg-white border border-gray-300 rounded px-1.5 py-0.5 outline-none focus:border-purple-400 focus:ring-1 focus:ring-purple-200 min-w-0 w-full"
+              />
+            ) : (
+              <span className="text-sm font-medium text-gray-900 truncate">
+                {source.name}
+              </span>
+            )}
             <span className="text-xs text-gray-400 shrink-0">
               {source.emojiCount}
             </span>
@@ -171,6 +237,24 @@ function SourceCard({
           <EmojiGrid sourceId={source.id} />
 
           <div className="flex items-center gap-2 pt-1">
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setEditName(source.name);
+                setEditing(true);
+              }}
+              className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-gray-700 transition-colors cursor-pointer"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"
+                />
+              </svg>
+              Rename
+            </button>
             {source.type === "slack" && (
               <button
                 onClick={handleRefresh}

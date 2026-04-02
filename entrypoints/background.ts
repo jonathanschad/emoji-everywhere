@@ -322,19 +322,6 @@ async function refreshAllSlackSources(): Promise<void> {
   );
 }
 
-async function importZip(name: string, emojis: EmojiMap): Promise<void> {
-  const id = generateId();
-  const refs = await storeEmojis(id, emojis);
-
-  await addSource({
-    type: "zip",
-    id,
-    name,
-    emojis: refs,
-    addedAt: Date.now(),
-  });
-}
-
 async function getStatus(): Promise<ExtensionStatus> {
   const sources = await getSources();
   let totalEmojiCount = 0;
@@ -431,14 +418,11 @@ export default defineBackground(() => {
         });
         return true;
 
-      case "REMOVE_SOURCE":
-        removeSource(message.sourceId).then(() => {
-          sendResponse({ success: true });
-        });
-        return true;
-
-      case "IMPORT_ZIP":
-        importZip(message.name, message.emojis)
+      case "RENAME_SOURCE":
+        updateSource(message.sourceId, (s) => ({
+          ...s,
+          name: message.name,
+        }) as EmojiSource)
           .then(() => sendResponse({ success: true }))
           .catch((err) =>
             sendResponse({
@@ -446,6 +430,12 @@ export default defineBackground(() => {
               error: err instanceof Error ? err.message : "Unknown error",
             }),
           );
+        return true;
+
+      case "REMOVE_SOURCE":
+        removeSource(message.sourceId).then(() => {
+          sendResponse({ success: true });
+        });
         return true;
 
       case "ADD_EXCLUDED_DOMAIN":

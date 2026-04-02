@@ -1,5 +1,6 @@
 import { useState, useRef } from "react";
-import type { EmojiMap } from "@/lib/types";
+import type { EmojiMap, ZipSource } from "@/lib/types";
+import { setEmojiImageData, addSource, buildEmojiRefs } from "@/lib/storage";
 
 const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg"]);
 
@@ -63,17 +64,19 @@ export default function ZipImport() {
       }
 
       const zipName = file.name.replace(/\.zip$/i, "");
+      const id = crypto.randomUUID();
 
-      const response = await browser.runtime.sendMessage({
-        type: "IMPORT_ZIP",
+      await setEmojiImageData(id, emojis);
+      const refs = buildEmojiRefs(id, Object.keys(emojis));
+
+      const source: ZipSource = {
+        type: "zip",
+        id,
         name: zipName,
-        emojis,
-      });
-
-      if (!response?.success) {
-        setState({ step: "error", message: response?.error ?? "Import failed" });
-        return;
-      }
+        emojis: refs,
+        addedAt: Date.now(),
+      };
+      await addSource(source);
 
       setState({ step: "done", fileName: zipName, count: Object.keys(emojis).length });
     } catch (err) {

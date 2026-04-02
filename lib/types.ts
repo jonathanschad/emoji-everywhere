@@ -50,7 +50,7 @@ export type MessageType =
   | { type: "FETCH_ALL_EMOJIS" }
   | { type: "GET_STATUS" }
   | { type: "REMOVE_SOURCE"; sourceId: string }
-  | { type: "IMPORT_ZIP"; name: string; emojis: EmojiMap }
+  | { type: "RENAME_SOURCE"; sourceId: string; name: string }
   | { type: "STATUS_RESPONSE"; status: ExtensionStatus }
   | { type: "OAUTH_COMPLETE"; success: boolean; error?: string }
   | { type: "EMOJIS_UPDATED" }

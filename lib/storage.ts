@@ -139,16 +139,22 @@ export async function getEmojiImageData(
   return Object.keys(images).length > 0 ? images : null;
 }
 
-/** Write all images for a source as individual keys (single storage call). */
+const STORAGE_BATCH_SIZE = 50;
+
+/** Write all images for a source as individual keys, batched to avoid large single writes. */
 export async function setEmojiImageData(
   sourceId: string,
   images: EmojiMap,
 ): Promise<void> {
-  const items: Record<string, string> = {};
-  for (const [name, url] of Object.entries(images)) {
-    items[`${IMG_KEY_PREFIX}${sourceId}:${name}`] = url;
+  const entries = Object.entries(images);
+  for (let i = 0; i < entries.length; i += STORAGE_BATCH_SIZE) {
+    const batch = entries.slice(i, i + STORAGE_BATCH_SIZE);
+    const items: Record<string, string> = {};
+    for (const [name, url] of batch) {
+      items[`${IMG_KEY_PREFIX}${sourceId}:${name}`] = url;
+    }
+    await browser.storage.local.set(items);
   }
-  await browser.storage.local.set(items);
 }
 
 /** Remove all image keys for a source. */
