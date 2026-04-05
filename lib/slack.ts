@@ -31,12 +31,12 @@ export function getAuthorizeUrl(
 ): string {
   const params = new URLSearchParams({
     client_id: getEffectiveClientId(clientId),
-    scope: "emoji:read",
+    user_scope: "emoji:read",
     redirect_uri: redirectUri,
     code_challenge: codeChallenge,
     code_challenge_method: "S256",
   });
-  return `https://slack.com/oauth/v2_user/authorize?${params}`;
+  return `https://slack.com/oauth/v2/authorize?${params}`;
 }
 
 export async function exchangeCodeForToken(
