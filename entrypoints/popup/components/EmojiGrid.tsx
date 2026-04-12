@@ -3,6 +3,8 @@ import {
   getSource,
   getEmojiOverrides,
   getEffectiveEmojiEntriesForSource,
+  watchSources,
+  watchEmojiOverrides,
 } from "@/lib/storage";
 import { searchEmojis } from "@/lib/emoji-search";
 import { resolveImageUrl, TRANSPARENT_PIXEL } from "@/lib/emoji-image-resolver";
@@ -10,6 +12,8 @@ import type {
   EffectiveEmojiEntry,
   EmojiMap,
   EmojiOverride,
+  EmojiOverrideProfile,
+  EmojiOverrideRule,
 } from "@/lib/types";
 
 const BATCH_SIZE = 100;
@@ -19,16 +23,106 @@ interface Props {
   onStatusChange: () => void | Promise<void>;
 }
 
-interface EmojiGridEntry extends EffectiveEmojiEntry {
-  override: EmojiOverride;
-}
+interface EmojiGridEntry extends EffectiveEmojiEntry {}
 
-const DEFAULT_OVERRIDE: EmojiOverride = {
+const DEFAULT_PROFILE: EmojiOverrideProfile = {
   disabled: false,
   name: null,
   aliases: [],
   nativeEmojis: [],
 };
+
+const DEFAULT_OVERRIDE: EmojiOverride = {
+  default: DEFAULT_PROFILE,
+  rules: [],
+};
+
+function normalizeDomain(domain: string): string {
+  return domain.toLowerCase().trim().replace(/^\.+/, "").replace(/\.+$/, "");
+}
+
+function normalizePathname(pathname: string): string {
+  const trimmed = pathname.trim();
+  if (!trimmed) return "";
+  if (trimmed === "/") return "/";
+  const withLeadingSlash = trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+  return withLeadingSlash.replace(/\/+$/, "") || "/";
+}
+
+function combineRuleLocation(hostname: string, pathname: string | null): string {
+  const normalizedHostname = normalizeDomain(hostname);
+  const normalizedPathname = pathname ? normalizePathname(pathname) : "";
+  return `${normalizedHostname}${normalizedPathname === "/" ? "/" : normalizedPathname}`;
+}
+
+function parseRuleLocation(input: string): { hostname: string; pathname: string | null } {
+  const trimmed = input.trim();
+  if (!trimmed) {
+    return { hostname: "", pathname: null };
+  }
+
+  const withProtocol = /^[a-z]+:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+
+  try {
+    const parsed = new URL(withProtocol);
+    return {
+      hostname: normalizeDomain(parsed.hostname),
+      pathname: parsed.pathname && parsed.pathname !== "/"
+        ? normalizePathname(parsed.pathname)
+        : null,
+    };
+  } catch {
+    const slashIndex = trimmed.indexOf("/");
+    const hostname = normalizeDomain(slashIndex === -1 ? trimmed : trimmed.slice(0, slashIndex));
+    const pathname = slashIndex === -1
+      ? null
+      : normalizePathname(trimmed.slice(slashIndex));
+
+    return {
+      hostname,
+      pathname: pathname || null,
+    };
+  }
+}
+
+function createEmptyProfile(): EmojiOverrideProfile {
+  return {
+    disabled: false,
+    name: null,
+    aliases: [],
+    nativeEmojis: [],
+  };
+}
+
+function cloneOverride(override: EmojiOverride): EmojiOverride {
+  return {
+    default: {
+      ...override.default,
+      aliases: [...override.default.aliases],
+      nativeEmojis: [...override.default.nativeEmojis],
+    },
+    rules: override.rules.map((rule) => ({
+      ...rule,
+      override: {
+        ...rule.override,
+        aliases: [...rule.override.aliases],
+        nativeEmojis: [...rule.override.nativeEmojis],
+      },
+    })),
+  };
+}
+
+function buildRuleId(hostname: string, pathname: string, index: number): string {
+  return `${hostname}:${pathname || ""}:${Date.now()}:${index}`;
+}
+
+function parseAliases(value: string): string[] {
+  return value.split(",").map((alias) => alias.trim()).filter(Boolean);
+}
+
+function parseNativeEmojis(value: string): string[] {
+  return value.split(/\s+/).map((emoji) => emoji.trim()).filter(Boolean);
+}
 
 export default function EmojiGrid({ sourceId, onStatusChange }: Props) {
   const [entries, setEntries] = useState<EmojiGridEntry[]>([]);
@@ -72,6 +166,22 @@ export default function EmojiGrid({ sourceId, onStatusChange }: Props) {
   useEffect(() => {
     void loadEntries();
   }, [loadEntries]);
+
+  useEffect(() => {
+    const unwatchSources = watchSources((nextSources) => {
+      if (nextSources.some((source) => source.id === sourceId)) {
+        void loadEntries();
+      }
+    });
+    const unwatchOverrides = watchEmojiOverrides(() => {
+      void loadEntries();
+    });
+
+    return () => {
+      unwatchSources();
+      unwatchOverrides();
+    };
+  }, [loadEntries, sourceId]);
 
   const searchableMap = useMemo(() => {
     const map: EmojiMap = {};
@@ -129,7 +239,7 @@ export default function EmojiGrid({ sourceId, onStatusChange }: Props) {
 
   const saveOverride = useCallback(async (
     emojiName: string,
-    override: Partial<EmojiOverride>,
+    override: EmojiOverride,
   ) => {
     setSavingName(emojiName);
     setError(null);
@@ -157,7 +267,7 @@ export default function EmojiGrid({ sourceId, onStatusChange }: Props) {
 
   if (entries.length === 0) {
     return (
-      <div className="text-center text-xs text-gray-400 py-2">
+      <div className="py-2 text-center text-xs text-gray-400">
         No emojis in this source
       </div>
     );
@@ -172,7 +282,7 @@ export default function EmojiGrid({ sourceId, onStatusChange }: Props) {
         value={search}
         onChange={(e) => setSearch(e.target.value)}
         placeholder={`Search ${entries.length} emojis...`}
-        className="w-full px-3 py-1.5 border border-gray-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+        className="w-full rounded-lg border border-gray-200 px-3 py-1.5 text-xs focus:border-transparent focus:outline-none focus:ring-2 focus:ring-purple-500"
       />
 
       {error && (
@@ -183,7 +293,7 @@ export default function EmojiGrid({ sourceId, onStatusChange }: Props) {
 
       <div
         ref={scrollRef}
-        className="grid grid-cols-8 gap-1 max-h-36 overflow-y-auto p-1"
+        className="grid max-h-36 grid-cols-8 gap-1 overflow-y-auto p-1"
       >
         {visibleEntries.map((entry) => (
           <EmojiCell
@@ -197,7 +307,7 @@ export default function EmojiGrid({ sourceId, onStatusChange }: Props) {
       </div>
 
       {filteredEntries.length === 0 && search && (
-        <p className="text-center text-xs text-gray-400 py-1">
+        <p className="py-1 text-center text-xs text-gray-400">
           No emojis matching &ldquo;{search}&rdquo;
         </p>
       )}
@@ -236,7 +346,7 @@ function EmojiCell({
   return (
     <button
       onClick={onClick}
-      className={`w-8 h-8 flex items-center justify-center rounded transition-colors group relative cursor-pointer ${
+      className={`group relative flex h-8 w-8 items-center justify-center rounded transition-colors cursor-pointer ${
         entry.enabled ? "hover:bg-gray-100" : "bg-gray-100 opacity-60 hover:bg-gray-200"
       }`}
       title={`:${entry.primaryName}:`}
@@ -244,11 +354,11 @@ function EmojiCell({
       <img
         src={src}
         alt={`:${entry.primaryName}:`}
-        className="w-5 h-5"
+        className="h-5 w-5"
         loading="lazy"
       />
       {!entry.enabled && (
-        <span className="absolute -top-0.5 -right-0.5 h-2.5 w-2.5 rounded-full bg-gray-500" />
+        <span className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full bg-gray-500" />
       )}
     </button>
   );
@@ -263,12 +373,13 @@ function EmojiConfigModal({
   entry: EmojiGridEntry;
   saving: boolean;
   onClose: () => void;
-  onSave: (emojiName: string, override: Partial<EmojiOverride>) => Promise<void>;
+  onSave: (emojiName: string, override: EmojiOverride) => Promise<void>;
 }) {
   const [src, setSrc] = useState(TRANSPARENT_PIXEL);
-  const [name, setName] = useState(entry.override.name ?? "");
-  const [aliases, setAliases] = useState(entry.override.aliases.join(", "));
-  const [nativeEmojis, setNativeEmojis] = useState(entry.override.nativeEmojis.join(" "));
+  const [draft, setDraft] = useState<EmojiOverride>(cloneOverride(entry.override));
+  const [activeTabId, setActiveTabId] = useState<string>("default");
+  const [localError, setLocalError] = useState<string | null>(null);
+  const [ruleLocationInput, setRuleLocationInput] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -281,22 +392,156 @@ function EmojiConfigModal({
   }, [entry.ref]);
 
   useEffect(() => {
-    setName(entry.override.name ?? "");
-    setAliases(entry.override.aliases.join(", "));
-    setNativeEmojis(entry.override.nativeEmojis.join(" "));
-  }, [entry.override.aliases, entry.override.name, entry.override.nativeEmojis, entry.originalName]);
+    setDraft(cloneOverride(entry.override));
+    setActiveTabId("default");
+    setLocalError(null);
+  }, [entry.override, entry.originalName]);
 
-  const aliasPreview = entry.aliases.length > 0
-    ? entry.aliases.map((alias) => `:${alias}:`).join(" ")
+  useEffect(() => {
+    const activeRule = activeTabId === "default"
+      ? null
+      : draft.rules.find((rule) => rule.id === activeTabId) ?? null;
+    setRuleLocationInput(
+      activeRule ? combineRuleLocation(activeRule.hostname, activeRule.pathname) : "",
+    );
+  }, [activeTabId, draft.rules]);
+
+  const tabs = useMemo(() => [
+    {
+      id: "default",
+      label: "Default",
+      subtitle: "Used when no website rule matches",
+      profile: draft.default,
+      hostname: null,
+      pathname: null,
+    },
+    ...draft.rules.map((rule) => ({
+      id: rule.id,
+      label: rule.hostname || "New site",
+      subtitle: rule.pathname ?? "All paths",
+      profile: rule.override,
+      hostname: rule.hostname,
+      pathname: rule.pathname,
+    })),
+  ], [draft]);
+
+  const activeRule = activeTabId === "default"
+    ? null
+    : draft.rules.find((rule) => rule.id === activeTabId) ?? null;
+  const activeProfile = activeRule?.override ?? draft.default;
+
+  const updateDefault = (updater: (profile: EmojiOverrideProfile) => EmojiOverrideProfile) => {
+    setDraft((current) => ({
+      ...current,
+      default: updater(current.default),
+    }));
+  };
+
+  const updateRule = (ruleId: string, updater: (rule: EmojiOverrideRule) => EmojiOverrideRule) => {
+    setDraft((current) => ({
+      ...current,
+      rules: current.rules.map((rule) => rule.id === ruleId ? updater(rule) : rule),
+    }));
+  };
+
+  const updateActiveProfile = (updater: (profile: EmojiOverrideProfile) => EmojiOverrideProfile) => {
+    if (activeRule) {
+      updateRule(activeRule.id, (rule) => ({
+        ...rule,
+        override: updater(rule.override),
+      }));
+      return;
+    }
+
+    updateDefault(updater);
+  };
+
+  const handleAddRule = () => {
+    const nextRule: EmojiOverrideRule = {
+      id: buildRuleId("", "", draft.rules.length),
+      hostname: "",
+      pathname: null,
+      override: { ...activeProfile, aliases: [...activeProfile.aliases], nativeEmojis: [...activeProfile.nativeEmojis] },
+    };
+
+    setDraft((current) => ({
+      ...current,
+      rules: [...current.rules, nextRule],
+    }));
+    setActiveTabId(nextRule.id);
+    setLocalError(null);
+  };
+
+  const handleRemoveRule = (ruleId: string) => {
+    setDraft((current) => ({
+      ...current,
+      rules: current.rules.filter((rule) => rule.id !== ruleId),
+    }));
+    setActiveTabId("default");
+    setLocalError(null);
+  };
+
+  const commitRuleLocation = (): EmojiOverride | null => {
+    if (!activeRule) return draft;
+
+    const { hostname, pathname } = parseRuleLocation(ruleLocationInput);
+    if (!hostname) {
+      setLocalError("Please enter a valid URL or hostname for this tab.");
+      return null;
+    }
+
+    const duplicate = draft.rules.some((rule) =>
+      rule.id !== activeRule.id
+      && rule.hostname === hostname
+      && (rule.pathname ?? "") === (pathname ?? ""),
+    );
+    if (duplicate) {
+      setLocalError("That website config already exists.");
+      return null;
+    }
+
+    const nextDraft: EmojiOverride = {
+      ...draft,
+      rules: draft.rules.map((rule) =>
+        rule.id === activeRule.id
+          ? {
+              ...rule,
+              hostname,
+              pathname,
+            }
+          : rule
+      ),
+    };
+    setDraft(nextDraft);
+    setRuleLocationInput(combineRuleLocation(hostname, pathname));
+    setLocalError(null);
+    return nextDraft;
+  };
+
+  const handleSave = async () => {
+    const nextDraft = commitRuleLocation();
+    if (!nextDraft) return;
+    setLocalError(null);
+    await onSave(entry.originalName, nextDraft);
+  };
+
+  const handleResetAll = () => {
+    setDraft(cloneOverride(DEFAULT_OVERRIDE));
+    setActiveTabId("default");
+    setLocalError(null);
+  };
+
+  const aliasPreview = activeProfile.aliases.length > 0
+    ? activeProfile.aliases.map((alias) => `:${alias}:`).join(" ")
     : "No extra aliases";
-  const nativeEmojiPreview = entry.nativeEmojis.length > 0
-    ? entry.nativeEmojis.join(" ")
+  const nativeEmojiPreview = activeProfile.nativeEmojis.length > 0
+    ? activeProfile.nativeEmojis.join(" ")
     : "No native emoji triggers";
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="w-full max-w-sm rounded-xl bg-white shadow-xl">
-        <div className="flex items-start gap-3 border-b border-gray-100 p-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-2">
+      <div className="max-h-[calc(100vh-1rem)] w-full max-w-sm overflow-hidden rounded-xl bg-white shadow-xl">
+        <div className="flex items-start gap-3 border-b border-gray-100 p-3">
           <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-gray-50">
             <img src={src} alt={`:${entry.primaryName}:`} className="h-7 w-7" loading="lazy" />
           </div>
@@ -305,9 +550,7 @@ function EmojiConfigModal({
               <p className="truncate text-sm font-medium text-gray-900">
                 :{entry.primaryName}:
               </p>
-              {saving && (
-                <span className="text-[11px] text-gray-400">Saving...</span>
-              )}
+              {saving && <span className="text-[11px] text-gray-400">Saving...</span>}
             </div>
             <p className="text-[11px] text-gray-500">
               Original: :{entry.originalName}:
@@ -330,91 +573,176 @@ function EmojiConfigModal({
           </button>
         </div>
 
-        <div className="space-y-3 p-4">
-          <label className="flex items-center justify-between rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
-            <span className="text-xs font-medium text-gray-700">Enabled</span>
-            <input
-              type="checkbox"
-              className="h-4 w-4 rounded border-gray-300 text-purple-600 focus:ring-purple-500"
-              checked={entry.enabled}
-              onChange={(e) => {
-                void onSave(entry.originalName, { disabled: !e.target.checked });
-              }}
-            />
-          </label>
-
-          <label className="space-y-1">
-            <span className="text-[11px] font-medium text-gray-600">Primary name</span>
-            <input
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              onBlur={() => {
-                void onSave(entry.originalName, { name: name.trim() || null });
-              }}
-              placeholder={entry.originalName}
-              className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-            />
-          </label>
-
-          <label className="space-y-1">
-            <span className="text-[11px] font-medium text-gray-600">Aliases</span>
-            <input
-              type="text"
-              value={aliases}
-              onChange={(e) => setAliases(e.target.value)}
-              onBlur={() => {
-                void onSave(entry.originalName, {
-                  aliases: aliases
-                    .split(",")
-                    .map((alias) => alias.trim())
-                    .filter(Boolean),
-                });
-              }}
-              placeholder="name2, name3"
-              className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-            />
-          </label>
-
-          <label className="space-y-1">
-            <span className="text-[11px] font-medium text-gray-600">Replace native emojis</span>
-            <input
-              type="text"
-              value={nativeEmojis}
-              onChange={(e) => setNativeEmojis(e.target.value)}
-              onBlur={() => {
-                void onSave(entry.originalName, {
-                  nativeEmojis: nativeEmojis
-                    .split(/\s+/)
-                    .map((emoji) => emoji.trim())
-                    .filter(Boolean),
-                });
-              }}
-              placeholder="🥸 🤖"
-              className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-            />
-            <p className="text-[11px] text-gray-500">
-              Any matching emoji character on the page will be swapped for this custom emoji.
+        <div className="max-h-[calc(100vh-5.5rem)] overflow-y-auto p-3 pb-4">
+          <div className="mb-2.5">
+            <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+              Config Tabs
             </p>
-          </label>
+            <div className="flex items-start gap-2">
+              <div className="flex min-w-0 flex-1 gap-2 overflow-x-auto pb-1">
+                {tabs.map((tab) => (
+                  <button
+                    key={tab.id}
+                    onClick={() => setActiveTabId(tab.id)}
+                    className={`min-w-0 shrink-0 rounded-lg border px-3 py-2 text-left transition-colors cursor-pointer ${
+                      activeTabId === tab.id
+                        ? "border-purple-300 bg-purple-50 text-purple-800"
+                        : "border-gray-200 bg-white text-gray-700 hover:bg-gray-50"
+                    }`}
+                  >
+                    <div className="max-w-28 truncate text-xs font-medium">{tab.label}</div>
+                    <div className="max-w-28 truncate text-[11px] text-gray-500">{tab.subtitle}</div>
+                  </button>
+                ))}
+              </div>
+              <button
+                onClick={handleAddRule}
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-gray-200 bg-white text-gray-700 transition-colors hover:bg-gray-50"
+                aria-label="Add website tab"
+                title="Add website tab"
+              >
+                <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 5v14M5 12h14" />
+                </svg>
+              </button>
+            </div>
+          </div>
 
-          <div className="flex justify-end pt-1">
-            <button
-              onClick={() => {
-                setName("");
-                setAliases("");
-                setNativeEmojis("");
-                void onSave(entry.originalName, {
-                  disabled: false,
-                  name: null,
-                  aliases: [],
-                  nativeEmojis: [],
-                });
-              }}
-              className="rounded-md border border-gray-200 px-3 py-2 text-xs font-medium text-gray-600 hover:bg-gray-50"
-            >
-              Reset Emoji
-            </button>
+          <div className="pb-1">
+            {localError && (
+              <div className="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                {localError}
+              </div>
+            )}
+
+            <div className="mb-3 flex items-start justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold text-gray-800">
+                  {activeRule ? activeRule.hostname : "Default config"}
+                </p>
+                <p className="text-[11px] text-gray-500">
+                  {activeRule
+                    ? activeRule.pathname
+                      ? `Applies on ${activeRule.hostname}${activeRule.pathname} and below`
+                      : `Applies on ${activeRule.hostname} across all paths`
+                    : "Fallback config used when no website tab matches"}
+                </p>
+              </div>
+              {activeRule && (
+                <button
+                  onClick={() => handleRemoveRule(activeRule.id)}
+                  className="rounded-md border border-red-200 px-3 py-2 text-xs font-medium text-red-600 hover:bg-red-50"
+                >
+                  Remove Tab
+                </button>
+              )}
+            </div>
+
+            {activeRule && (
+              <div className="mb-3 rounded-lg border border-gray-200 bg-gray-50 p-3">
+                <label className="space-y-1">
+                  <span className="text-[11px] font-medium text-gray-600">Configured URL</span>
+                  <input
+                    type="text"
+                    value={ruleLocationInput}
+                    onChange={(e) => {
+                      setRuleLocationInput(e.target.value);
+                    }}
+                    onBlur={() => {
+                      commitRuleLocation();
+                    }}
+                    placeholder="example.com/chat"
+                    className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-xs focus:border-transparent focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  />
+                </label>
+              </div>
+            )}
+
+            <div className="space-y-3">
+              <label className="flex items-center justify-between rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
+                <span className="text-xs font-medium text-gray-700">Enabled</span>
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 rounded border-gray-300 text-purple-600 focus:ring-purple-500"
+                  checked={!activeProfile.disabled}
+                  onChange={(e) => {
+                    updateActiveProfile((profile) => ({
+                      ...profile,
+                      disabled: !e.target.checked,
+                    }));
+                  }}
+                />
+              </label>
+
+              <label className="space-y-1">
+                <span className="text-[11px] font-medium text-gray-600">Primary name</span>
+                <input
+                  type="text"
+                  value={activeProfile.name ?? ""}
+                  onChange={(e) => {
+                    const value = e.target.value.trim();
+                    updateActiveProfile((profile) => ({
+                      ...profile,
+                      name: value || null,
+                    }));
+                  }}
+                  placeholder={entry.originalName}
+                  className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-xs focus:border-transparent focus:outline-none focus:ring-2 focus:ring-purple-500"
+                />
+              </label>
+
+              <label className="space-y-1">
+                <span className="text-[11px] font-medium text-gray-600">Aliases</span>
+                <input
+                  type="text"
+                  value={activeProfile.aliases.join(", ")}
+                  onChange={(e) => {
+                    updateActiveProfile((profile) => ({
+                      ...profile,
+                      aliases: parseAliases(e.target.value),
+                    }));
+                  }}
+                  placeholder="name2, name3"
+                  className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-xs focus:border-transparent focus:outline-none focus:ring-2 focus:ring-purple-500"
+                />
+              </label>
+
+              <label className="space-y-1">
+                <span className="text-[11px] font-medium text-gray-600">Replace native emojis</span>
+                <input
+                  type="text"
+                  value={activeProfile.nativeEmojis.join(" ")}
+                  onChange={(e) => {
+                    updateActiveProfile((profile) => ({
+                      ...profile,
+                      nativeEmojis: parseNativeEmojis(e.target.value),
+                    }));
+                  }}
+                  placeholder="🥸 🤖"
+                  className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-xs focus:border-transparent focus:outline-none focus:ring-2 focus:ring-purple-500"
+                />
+                <p className="text-[11px] text-gray-500">
+                  Any matching emoji character on the page will be swapped for this custom emoji.
+                </p>
+              </label>
+
+              <div className="flex flex-wrap justify-between gap-2 pt-2">
+                <div className="flex gap-2">
+                  <button
+                    onClick={handleResetAll}
+                    className="rounded-md border border-gray-200 px-3 py-2 text-xs font-medium text-gray-600 hover:bg-gray-50"
+                  >
+                    Reset All
+                  </button>
+                </div>
+                <button
+                  onClick={() => void handleSave()}
+                  className="rounded-md bg-slate-900 px-3 py-2 text-xs font-medium text-white hover:bg-slate-800"
+                >
+                  Save Changes
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       </div>

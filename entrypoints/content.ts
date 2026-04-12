@@ -28,10 +28,11 @@ export default defineContentScript({
 
   async main() {
     const hostname = window.location.hostname.toLowerCase();
+    const pathname = window.location.pathname || "/";
     let sources: EmojiSource[] = await getSources();
     let overrides: EmojiOverridesBySource = await getEmojiOverrides();
-    let emojis: EmojiMap = buildMergedEmojisForHostname(sources, hostname, overrides);
-    let nativeEmojiMap: EmojiMap = buildMergedNativeEmojiMapForHostname(sources, hostname, overrides);
+    let emojis: EmojiMap = buildMergedEmojisForHostname(sources, hostname, overrides, pathname);
+    let nativeEmojiMap: EmojiMap = buildMergedNativeEmojiMapForHostname(sources, hostname, overrides, pathname);
     let settings: Settings = await getSettings();
     let excludedDomains: string[] = await getExcludedDomains();
     let observer: MutationObserver | null = null;
@@ -83,8 +84,8 @@ export default defineContentScript({
 
     watchSources((newSources) => {
       sources = newSources;
-      emojis = buildMergedEmojisForHostname(sources, hostname, overrides);
-      nativeEmojiMap = buildMergedNativeEmojiMapForHostname(sources, hostname, overrides);
+      emojis = buildMergedEmojisForHostname(sources, hostname, overrides, pathname);
+      nativeEmojiMap = buildMergedNativeEmojiMapForHostname(sources, hostname, overrides, pathname);
       clearResolverCache();
       updateEmojis(emojis);
       restart();
@@ -92,8 +93,8 @@ export default defineContentScript({
 
     watchEmojiOverrides((newOverrides) => {
       overrides = newOverrides;
-      emojis = buildMergedEmojisForHostname(sources, hostname, overrides);
-      nativeEmojiMap = buildMergedNativeEmojiMapForHostname(sources, hostname, overrides);
+      emojis = buildMergedEmojisForHostname(sources, hostname, overrides, pathname);
+      nativeEmojiMap = buildMergedNativeEmojiMapForHostname(sources, hostname, overrides, pathname);
       clearResolverCache();
       updateEmojis(emojis);
       restart();

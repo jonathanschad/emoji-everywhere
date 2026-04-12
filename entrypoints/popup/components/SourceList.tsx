@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import type { SourceDomainFilterMode, SourceSummary } from "@/lib/types";
-import { getEmojiImageData, getEmojiOverrides } from "@/lib/storage";
-import { ICON_PACK_CONFIG_FILE, buildIconPackConfig } from "@/lib/icon-pack";
+import { getEmojiImageData, getEmojiOverrides, getSource, replaceEmojiOverridesForSource, updateSource } from "@/lib/storage";
+import { ICON_PACK_CONFIG_FILE, buildIconPackConfig, parseIconPackConfig } from "@/lib/icon-pack";
 import EmojiGrid from "./EmojiGrid";
 
 interface Props {
@@ -10,12 +10,40 @@ interface Props {
 }
 
 export default function SourceList({ sources, onStatusChange }: Props) {
+  const priorityOrderedSources = [...sources].reverse();
+
+  const moveSource = async (sourceId: string, direction: -1 | 1) => {
+    const currentIndex = priorityOrderedSources.findIndex((source) => source.id === sourceId);
+    const targetIndex = currentIndex + direction;
+
+    if (currentIndex === -1 || targetIndex < 0 || targetIndex >= priorityOrderedSources.length) {
+      return;
+    }
+
+    const next = [...priorityOrderedSources];
+    const [movedSource] = next.splice(currentIndex, 1);
+    next.splice(targetIndex, 0, movedSource);
+
+    const response = await browser.runtime.sendMessage({
+      type: "REORDER_SOURCES",
+      sourceIds: next.map((source) => source.id).reverse(),
+    });
+
+    if (response?.success) {
+      await onStatusChange();
+    }
+  };
+
   return (
     <div className="space-y-2">
-      {sources.map((source) => (
+      {priorityOrderedSources.map((source, index) => (
         <SourceCard
           key={source.id}
           source={source}
+          isHighestPriority={index === 0}
+          isLowestPriority={index === priorityOrderedSources.length - 1}
+          onMoveHigher={() => moveSource(source.id, -1)}
+          onMoveLower={() => moveSource(source.id, 1)}
           onStatusChange={onStatusChange}
         />
       ))}
@@ -25,9 +53,17 @@ export default function SourceList({ sources, onStatusChange }: Props) {
 
 function SourceCard({
   source,
+  isHighestPriority,
+  isLowestPriority,
+  onMoveHigher,
+  onMoveLower,
   onStatusChange,
 }: {
   source: SourceSummary;
+  isHighestPriority: boolean;
+  isLowestPriority: boolean;
+  onMoveHigher: () => void | Promise<void>;
+  onMoveLower: () => void | Promise<void>;
   onStatusChange: () => void | Promise<void>;
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -37,6 +73,7 @@ function SourceCard({
     total: number;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [editName, setEditName] = useState(source.name);
   const [domainMode, setDomainMode] = useState<SourceDomainFilterMode>(
@@ -45,6 +82,12 @@ function SourceCard({
   const [domainInput, setDomainInput] = useState("");
   const [savingFilter, setSavingFilter] = useState(false);
   const [showDomainRules, setShowDomainRules] = useState(false);
+  const [configViewer, setConfigViewer] = useState<{
+    loading: boolean;
+    json: string;
+    saving: boolean;
+    error: string | null;
+  } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const savingRef = useRef(false);
   const cancelledRef = useRef(false);
@@ -126,6 +169,7 @@ function SourceCard({
     e.stopPropagation();
     setRefreshing(true);
     setError(null);
+    setInfo(null);
 
     try {
       const response = await browser.runtime.sendMessage({
@@ -146,6 +190,7 @@ function SourceCard({
   const handleExport = async (e: React.MouseEvent) => {
     e.stopPropagation();
     setError(null);
+    setInfo(null);
 
     try {
       const [imageData, overrides] = await Promise.all([
@@ -207,6 +252,113 @@ function SourceCard({
     }
   };
 
+  const loadCurrentConfigJson = async () => {
+    const [sourceDetails, overrides] = await Promise.all([
+      getSource(source.id),
+      getEmojiOverrides(),
+    ]);
+
+    if (!sourceDetails) {
+      throw new Error("Source not found");
+    }
+
+    const config = buildIconPackConfig({
+      sourceName: sourceDetails.name,
+      domainFilter: sourceDetails.domainFilter,
+      overrides: overrides[source.id],
+    });
+
+    return JSON.stringify(config, null, 2);
+  };
+
+  const applyConfig = async (raw: string) => {
+    const sourceDetails = await getSource(source.id);
+    if (!sourceDetails) {
+      throw new Error("Source not found");
+    }
+
+    const config = parseIconPackConfig(raw, Object.keys(sourceDetails.emojis));
+    await updateSource(source.id, (current) => ({
+      ...current,
+      name: config.sourceName ?? current.name,
+      domainFilter: config.domainFilter,
+    }));
+    await replaceEmojiOverridesForSource(source.id, config.overrides);
+    await onStatusChange();
+    return loadCurrentConfigJson();
+  };
+
+  const handleImportConfig = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setError(null);
+    setInfo(null);
+    browser.windows.create({
+      url: browser.runtime.getURL(`popup.html?mode=config-import&sourceId=${encodeURIComponent(source.id)}`),
+      type: "popup",
+      width: 420,
+      height: 380,
+    });
+  };
+
+  const handleViewConfig = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setConfigViewer({
+      loading: true,
+      json: "",
+      saving: false,
+      error: null,
+    });
+    setInfo(null);
+
+    try {
+      setConfigViewer({
+        loading: false,
+        json: await loadCurrentConfigJson(),
+        saving: false,
+        error: null,
+      });
+    } catch (err) {
+      setConfigViewer({
+        loading: false,
+        json: "",
+        saving: false,
+        error: err instanceof Error ? err.message : "Failed to load config",
+      });
+    }
+  };
+
+  const handleSaveViewedConfig = async (nextJson: string) => {
+    setError(null);
+    setInfo(null);
+    setConfigViewer((current) => current
+      ? {
+          ...current,
+          saving: true,
+          error: null,
+          json: nextJson,
+        }
+      : current);
+
+    try {
+      const persistedJson = await applyConfig(nextJson);
+      setInfo("Config saved and reloaded.");
+      setConfigViewer({
+        loading: false,
+        saving: false,
+        json: persistedJson,
+        error: null,
+      });
+    } catch (err) {
+      setConfigViewer((current) => current
+        ? {
+            ...current,
+            saving: false,
+            error: err instanceof Error ? err.message : "Failed to save config",
+          }
+        : current);
+    }
+  };
+
   const handleRemove = async (e: React.MouseEvent) => {
     e.stopPropagation();
     await browser.runtime.sendMessage({
@@ -264,6 +416,13 @@ function SourceCard({
               {source.effectiveEmojiCount}
             </span>
           </div>
+          <p className="text-[11px] text-gray-500 truncate">
+            {isHighestPriority
+              ? "Highest duplicate priority"
+              : isLowestPriority
+                ? "Lowest duplicate priority"
+                : "Medium duplicate priority"}
+          </p>
           <p className="text-xs text-gray-400 truncate">
             {source.type === "slack" ? `Synced ${lastSyncText}` : `Imported ${lastSyncText}`}
           </p>
@@ -291,6 +450,12 @@ function SourceCard({
           {source.error && (
             <div className="bg-red-50 border border-red-200 rounded-lg p-2 text-xs text-red-700">
               {source.error}
+            </div>
+          )}
+
+          {info && (
+            <div className="bg-green-50 border border-green-200 rounded-lg p-2 text-xs text-green-700">
+              {info}
             </div>
           )}
 
@@ -428,7 +593,46 @@ function SourceCard({
             )}
           </div>
 
-          <div className="flex items-center gap-2 pt-1">
+          <div className="flex items-center gap-2 rounded-md border border-gray-200 bg-gray-50 px-2.5 py-2">
+            <span className="text-xs font-medium text-gray-700">Priority</span>
+            <span className="rounded-full border border-gray-200 bg-white px-1.5 py-0.5 text-[10px] font-medium text-gray-600">
+              {isHighestPriority
+                ? "Top"
+                : isLowestPriority
+                  ? "Bottom"
+                  : "Middle"}
+            </span>
+            <div className="ml-auto flex items-center gap-1">
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void onMoveHigher();
+                }}
+                disabled={isHighestPriority}
+                className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-gray-200 bg-white text-gray-700 hover:bg-gray-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+                title="Move higher priority"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
+                </svg>
+              </button>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void onMoveLower();
+                }}
+                disabled={isLowestPriority}
+                className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-gray-200 bg-white text-gray-700 hover:bg-gray-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+                title="Move lower priority"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2 pt-1">
             <button
               onClick={(e) => {
                 e.stopPropagation();
@@ -485,6 +689,20 @@ function SourceCard({
               Export ZIP
             </button>
             <button
+              onClick={handleViewConfig}
+              className="flex items-center gap-1.5 text-xs text-slate-600 hover:text-slate-800 transition-colors cursor-pointer"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M15 12H9m12 0A9 9 0 113 12a9 9 0 0118 0z"
+                />
+              </svg>
+              Config
+            </button>
+            <button
               onClick={handleRemove}
               className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-red-500 transition-colors cursor-pointer ml-auto"
             >
@@ -507,6 +725,19 @@ function SourceCard({
           sourceName={source.name}
           current={exportProgress.current}
           total={exportProgress.total}
+        />
+      )}
+
+      {configViewer && (
+        <ConfigViewerModal
+          sourceName={source.name}
+          loading={configViewer.loading}
+          saving={configViewer.saving}
+          json={configViewer.json}
+          error={configViewer.error}
+          onImport={handleImportConfig}
+          onSave={handleSaveViewedConfig}
+          onClose={() => setConfigViewer(null)}
         />
       )}
     </div>
@@ -575,6 +806,104 @@ function ExportModal({
           <p className="text-xs text-amber-700 leading-relaxed">
             Keep this popup open until the export finishes. Closing it will cancel the download.
           </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ConfigViewerModal({
+  sourceName,
+  loading,
+  saving,
+  json,
+  error,
+  onImport,
+  onSave,
+  onClose,
+}: {
+  sourceName: string;
+  loading: boolean;
+  saving: boolean;
+  json: string;
+  error: string | null;
+  onImport: (e: React.MouseEvent) => void;
+  onSave: (json: string) => void | Promise<void>;
+  onClose: () => void;
+}) {
+  const [draft, setDraft] = useState(json);
+
+  useEffect(() => {
+    setDraft(json);
+  }, [json]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="w-full max-w-2xl rounded-xl bg-white shadow-xl">
+        <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
+          <div className="min-w-0">
+            <p className="truncate text-sm font-medium text-gray-900">
+              Config for {sourceName}
+            </p>
+            <p className="text-xs text-gray-500">
+              Import, edit, and save the JSON currently loaded for this source.
+            </p>
+          </div>
+          <button
+            onClick={onClose}
+            className="rounded-md p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+            aria-label="Close"
+          >
+            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        <div className="p-4">
+          {loading ? (
+            <div className="flex items-center justify-center py-16">
+              <div className="animate-spin rounded-full h-8 w-8 border-2 border-slate-500 border-t-transparent" />
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {error && (
+                <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                  {error}
+                </div>
+              )}
+              <textarea
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                className="h-96 w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-3 font-mono text-xs text-gray-700 focus:outline-none focus:ring-2 focus:ring-slate-400"
+              />
+              <div className="flex items-center justify-between gap-2">
+                <button
+                  onClick={onImport}
+                  disabled={saving}
+                  className="rounded-md border border-teal-200 px-3 py-2 text-xs font-medium text-teal-700 hover:bg-teal-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  Import Config
+                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setDraft(json)}
+                    disabled={saving}
+                    className="rounded-md border border-gray-200 px-3 py-2 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    Reset
+                  </button>
+                  <button
+                    onClick={() => void onSave(draft)}
+                    disabled={saving}
+                    className="rounded-md bg-slate-900 px-3 py-2 text-xs font-medium text-white hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    {saving ? "Saving..." : "Save Config"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>

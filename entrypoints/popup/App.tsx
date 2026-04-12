@@ -3,14 +3,19 @@ import type { ExtensionStatus } from "@/lib/types";
 import SourceList from "./components/SourceList";
 import AddSource from "./components/AddSource";
 import ZipImport from "./components/ZipImport";
+import ConfigImport from "./components/ConfigImport";
 import SettingsPage from "./components/SettingsPage";
 import ExcludedDomains from "./components/ExcludedDomains";
 
-const isImportMode = new URLSearchParams(window.location.search).get("mode") === "import";
+const popupMode = new URLSearchParams(window.location.search).get("mode");
 
 export default function App() {
-  if (isImportMode) {
+  if (popupMode === "import") {
     return <ZipImport />;
+  }
+
+  if (popupMode === "config-import") {
+    return <ConfigImport />;
   }
 
   return <PopupMain />;
@@ -153,7 +158,10 @@ function PopupMain() {
             onStatusChange={refreshStatus}
           />
           {status!.sources.length > 1 && (
-            <DuplicateInfo duplicateCount={status!.duplicateCount} />
+            <DuplicateInfo
+              duplicateCount={status!.duplicateCount}
+              duplicateEmojis={status!.duplicateEmojis}
+            />
           )}
         </>
       ) : (
@@ -205,7 +213,13 @@ function PopupMain() {
   );
 }
 
-function DuplicateInfo({ duplicateCount }: { duplicateCount: number }) {
+function DuplicateInfo({
+  duplicateCount,
+  duplicateEmojis,
+}: {
+  duplicateCount: number;
+  duplicateEmojis: { name: string; sourceNames: string[] }[];
+}) {
   const [expanded, setExpanded] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
   const [height, setHeight] = useState(0);
@@ -246,8 +260,23 @@ function DuplicateInfo({ duplicateCount }: { duplicateCount: number }) {
         style={{ maxHeight: expanded ? height : 0 }}
       >
         <div ref={contentRef} className="px-3 pb-2.5 text-gray-500 leading-relaxed">
-          When the same emoji name exists in multiple sources, the source listed
-          last takes priority. The order matches the order in which sources were added.
+          <p>
+            When the same emoji name exists in multiple sources, the source shown
+            first in the list takes priority. Use the priority buttons on each
+            source to reorder duplicates.
+          </p>
+          {duplicateEmojis.length > 0 && (
+            <div className="mt-2 space-y-2">
+              {duplicateEmojis.map((emoji) => (
+                <div key={emoji.name} className="rounded-md bg-amber-50 border border-amber-100 px-2 py-1.5">
+                  <div className="font-mono text-[11px] text-amber-800">{emoji.name}</div>
+                  <div className="mt-1 text-[11px] text-amber-700">
+                    In: {emoji.sourceNames.join(", ")}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </div>

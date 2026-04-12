@@ -3,6 +3,8 @@ import type {
   EffectiveEmojiEntry,
   EmojiMap,
   EmojiOverride,
+  EmojiOverrideProfile,
+  EmojiOverrideRule,
   EmojiOverridesBySource,
   EmojiSource,
   Settings,
@@ -32,7 +34,6 @@ const keys = {
 };
 
 const EMOJI_NAME_PATTERN = /^[\w+-]+$/;
-
 function normalizeEmojiName(name: string): string {
   return name.trim().toLowerCase();
 }
@@ -41,9 +42,16 @@ function isValidEmojiName(name: string): boolean {
   return EMOJI_NAME_PATTERN.test(name);
 }
 
-function normalizeEmojiOverride(
-  override?: Partial<EmojiOverride> | null,
-): EmojiOverride {
+function normalizePathname(pathname: string): string {
+  const trimmed = pathname.trim();
+  if (!trimmed || trimmed === "/") return "/";
+  const withLeadingSlash = trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+  return withLeadingSlash.replace(/\/+$/, "") || "/";
+}
+
+function normalizeEmojiOverrideProfile(
+  override?: Partial<EmojiOverrideProfile> | null,
+): EmojiOverrideProfile {
   const name = override?.name == null
     ? null
     : normalizeEmojiName(override.name);
@@ -76,11 +84,90 @@ function normalizeEmojiOverride(
   };
 }
 
-function isDefaultEmojiOverride(override: EmojiOverride): boolean {
+function isDefaultEmojiOverrideProfile(override: EmojiOverrideProfile): boolean {
   return !override.disabled
     && !override.name
     && override.aliases.length === 0
     && override.nativeEmojis.length === 0;
+}
+
+function normalizeEmojiOverrideRule(
+  rule?: Partial<EmojiOverrideRule> | null,
+  index = 0,
+): EmojiOverrideRule | null {
+  const hostname = typeof rule?.hostname === "string" ? normalizeDomain(rule.hostname) : "";
+  if (!hostname) return null;
+
+  return {
+    id: typeof rule?.id === "string" && rule.id.trim()
+      ? rule.id.trim()
+      : `${hostname}:${typeof rule?.pathname === "string" ? normalizePathname(rule.pathname) : ""}:${index}`,
+    hostname,
+    pathname: typeof rule?.pathname === "string" && rule.pathname.trim()
+      ? normalizePathname(rule.pathname)
+      : null,
+    override: normalizeEmojiOverrideProfile(rule?.override),
+  };
+}
+
+function normalizeEmojiOverride(
+  override?: Partial<EmojiOverride> | Partial<EmojiOverrideProfile> | null,
+): EmojiOverride {
+  const legacyOverride = override as Partial<EmojiOverrideProfile> | null | undefined;
+  const modernOverride = override as Partial<EmojiOverride> | null | undefined;
+  const hasModernShape = modernOverride != null
+    && (Object.hasOwn(modernOverride, "default") || Object.hasOwn(modernOverride, "rules"));
+  const defaultOverride = hasModernShape
+    ? normalizeEmojiOverrideProfile(modernOverride.default)
+    : normalizeEmojiOverrideProfile(legacyOverride);
+  const rules = Array.isArray(modernOverride?.rules)
+    ? modernOverride.rules
+        .map((rule, index) => normalizeEmojiOverrideRule(rule, index))
+        .filter((rule): rule is EmojiOverrideRule => rule != null)
+    : [];
+
+  return {
+    default: defaultOverride,
+    rules,
+  };
+}
+
+function isDefaultEmojiOverride(override: EmojiOverride): boolean {
+  return isDefaultEmojiOverrideProfile(override.default)
+    && override.rules.length === 0;
+}
+
+function isPathPrefixMatch(currentPathname: string, rulePathname: string | null): boolean {
+  if (!rulePathname || rulePathname === "/") return true;
+  return currentPathname === rulePathname || currentPathname.startsWith(`${rulePathname}/`);
+}
+
+function compareOverrideRules(a: EmojiOverrideRule, b: EmojiOverrideRule): number {
+  const hostnameDiff = b.hostname.length - a.hostname.length;
+  if (hostnameDiff !== 0) return hostnameDiff;
+
+  return (b.pathname?.length ?? 0) - (a.pathname?.length ?? 0);
+}
+
+export function resolveEmojiOverrideForUrl(
+  override: EmojiOverride,
+  hostname?: string,
+  pathname = "/",
+): EmojiOverrideProfile {
+  if (!hostname) return override.default;
+
+  const normalizedHostname = normalizeDomain(hostname);
+  const normalizedPathname = normalizePathname(pathname);
+
+  const matchedRule = [...override.rules]
+    .filter((rule) => {
+      const hostnameMatches = normalizedHostname === rule.hostname
+        || normalizedHostname.endsWith(`.${rule.hostname}`);
+      return hostnameMatches && isPathPrefixMatch(normalizedPathname, rule.pathname);
+    })
+    .sort(compareOverrideRules)[0];
+
+  return matchedRule?.override ?? override.default;
 }
 
 function normalizeEmojiOverrides(
@@ -180,10 +267,11 @@ export function getEffectiveEmojiEntriesForSource(
   for (const [originalName, ref] of Object.entries(normalizedSource.emojis)) {
     const normalizedOriginalName = normalizeEmojiName(originalName);
     const override = normalizeEmojiOverride(sourceOverrides[normalizedOriginalName]);
+    const resolvedOverride = override.default;
 
     const seenNames = new Set<string>();
-    const primaryName = override.name ?? normalizedOriginalName;
-    const aliases = override.aliases
+    const primaryName = resolvedOverride.name ?? normalizedOriginalName;
+    const aliases = resolvedOverride.aliases
       .map(normalizeEmojiName)
       .filter((name) => name.length > 0 && isValidEmojiName(name))
       .filter((name) => {
@@ -198,9 +286,10 @@ export function getEffectiveEmojiEntriesForSource(
       originalName: normalizedOriginalName,
       primaryName,
       aliases,
-      nativeEmojis: override.nativeEmojis,
-      enabled: !override.disabled,
+      nativeEmojis: resolvedOverride.nativeEmojis,
+      enabled: !resolvedOverride.disabled,
       ref,
+      override,
     });
   }
 
@@ -227,22 +316,62 @@ export function buildMergedEmojisForHostname(
   sources: EmojiSource[],
   hostname: string,
   overrides: EmojiOverridesBySource = {},
+  pathname = "/",
 ): EmojiMap {
-  return buildMergedEmojis(
-    sources.filter((source) => isSourceEnabledForHostname(source, hostname)),
-    overrides,
-  );
+  const merged: EmojiMap = {};
+
+  for (const source of sources.map(normalizeSource)) {
+    if (!isSourceEnabledForHostname(source, hostname)) continue;
+
+    const sourceOverrides = overrides[source.id] ?? {};
+    for (const [originalName, ref] of Object.entries(source.emojis)) {
+      const normalizedOriginalName = normalizeEmojiName(originalName);
+      const resolvedOverride = resolveEmojiOverrideForUrl(
+        normalizeEmojiOverride(sourceOverrides[normalizedOriginalName]),
+        hostname,
+        pathname,
+      );
+      if (resolvedOverride.disabled) continue;
+
+      const primaryName = resolvedOverride.name ?? normalizedOriginalName;
+      merged[primaryName] = ref;
+
+      const seenAliases = new Set<string>();
+      for (const alias of resolvedOverride.aliases
+        .map(normalizeEmojiName)
+        .filter((name) => name.length > 0 && isValidEmojiName(name))) {
+        if (alias === primaryName || seenAliases.has(alias)) continue;
+        seenAliases.add(alias);
+        merged[alias] = ref;
+      }
+    }
+  }
+
+  return merged;
 }
 
 export function buildMergedNativeEmojiMap(
   sources: EmojiSource[],
   overrides: EmojiOverridesBySource = {},
+  hostname?: string,
+  pathname = "/",
 ): EmojiMap {
   const merged: EmojiMap = {};
   for (const source of sources.map(normalizeSource)) {
-    for (const entry of getEffectiveEmojiEntriesForSource(source, overrides)) {
-      for (const nativeEmoji of entry.nativeEmojis) {
-        merged[nativeEmoji] = entry.ref;
+    if (hostname && !isSourceEnabledForHostname(source, hostname)) continue;
+
+    const sourceOverrides = overrides[source.id] ?? {};
+    for (const [originalName, ref] of Object.entries(source.emojis)) {
+      const normalizedOriginalName = normalizeEmojiName(originalName);
+      const resolvedOverride = resolveEmojiOverrideForUrl(
+        normalizeEmojiOverride(sourceOverrides[normalizedOriginalName]),
+        hostname,
+        pathname,
+      );
+      if (resolvedOverride.disabled) continue;
+
+      for (const nativeEmoji of resolvedOverride.nativeEmojis) {
+        merged[nativeEmoji] = ref;
       }
     }
   }
@@ -253,10 +382,13 @@ export function buildMergedNativeEmojiMapForHostname(
   sources: EmojiSource[],
   hostname: string,
   overrides: EmojiOverridesBySource = {},
+  pathname = "/",
 ): EmojiMap {
   return buildMergedNativeEmojiMap(
-    sources.filter((source) => isSourceEnabledForHostname(source, hostname)),
+    sources,
     overrides,
+    hostname,
+    pathname,
   );
 }
 
@@ -309,6 +441,23 @@ export async function updateSource(
   sources[idx] = normalizeSource(updater(sources[idx]));
   await keys.sources.setValue(sources);
   await persistMerged(sources);
+}
+
+export async function reorderSources(sourceIds: string[]): Promise<void> {
+  const sources = await getSources();
+  if (sourceIds.length !== sources.length) return;
+
+  const sourceById = new Map(sources.map((source) => [source.id, source]));
+  if (sourceById.size !== sourceIds.length) return;
+
+  const reordered = sourceIds
+    .map((id) => sourceById.get(id))
+    .filter((source): source is EmojiSource => source != null);
+
+  if (reordered.length !== sources.length) return;
+
+  await keys.sources.setValue(reordered);
+  await persistMerged(reordered);
 }
 
 export async function removeSource(id: string): Promise<void> {
@@ -376,10 +525,11 @@ export async function updateEmojiOverride(
   const overrides = await getEmojiOverrides();
   const sourceOverrides = { ...(overrides[sourceId] ?? {}) };
   const current = normalizeEmojiOverride(sourceOverrides[normalizedEmojiName]);
-  const next = normalizeEmojiOverride({
-    ...current,
-    ...patch,
-  });
+  const next = normalizeEmojiOverride(
+    patch.default != null || patch.rules != null
+      ? patch
+      : current,
+  );
 
   if (isDefaultEmojiOverride(next)) {
     delete sourceOverrides[normalizedEmojiName];

@@ -1,10 +1,20 @@
-import type { EmojiOverridesBySource, EmojiOverride, SourceDomainFilter } from "./types";
+import type {
+  EmojiOverride,
+  EmojiOverrideProfile,
+  EmojiOverrideRule,
+  EmojiOverridesBySource,
+  SourceDomainFilter,
+} from "./types";
 import { DEFAULT_SOURCE_DOMAIN_FILTER } from "./types";
 
 export const ICON_PACK_CONFIG_FILE = "emoji-everywhere.config.json";
 
-interface IconPackConfigEmojiOverride extends Partial<EmojiOverride> {
+interface IconPackConfigEmojiRule extends Partial<EmojiOverrideRule> {}
+
+interface IconPackConfigEmojiOverride extends Partial<EmojiOverrideProfile> {
   originalName?: string;
+  default?: Partial<EmojiOverrideProfile>;
+  rules?: IconPackConfigEmojiRule[];
 }
 
 export interface IconPackConfig {
@@ -39,11 +49,20 @@ function normalizeEmojiName(name: string): string {
   return name.trim().toLowerCase();
 }
 
+function normalizePathname(pathname: string): string {
+  const trimmed = pathname.trim();
+  if (!trimmed || trimmed === "/") return "/";
+  const withLeadingSlash = trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+  return withLeadingSlash.replace(/\/+$/, "") || "/";
+}
+
 function isValidEmojiName(name: string): boolean {
   return /^[\w+-]+$/.test(name);
 }
 
-function normalizeOverride(override?: IconPackConfigEmojiOverride | null): EmojiOverride {
+function normalizeOverrideProfile(
+  override?: Partial<EmojiOverrideProfile> | null,
+): EmojiOverrideProfile {
   const name = override?.name == null ? null : normalizeEmojiName(override.name);
   const aliases = Array.isArray(override?.aliases)
     ? Array.from(
@@ -63,7 +82,6 @@ function normalizeOverride(override?: IconPackConfigEmojiOverride | null): Emoji
         ),
       )
     : [];
-
   return {
     disabled: override?.disabled === true,
     name: name && isValidEmojiName(name) ? name : null,
@@ -72,11 +90,49 @@ function normalizeOverride(override?: IconPackConfigEmojiOverride | null): Emoji
   };
 }
 
-function isDefaultOverride(override: EmojiOverride): boolean {
+function normalizeRule(
+  rule?: IconPackConfigEmojiRule | null,
+  index = 0,
+): EmojiOverrideRule | null {
+  const hostname = typeof rule?.hostname === "string" ? normalizeDomain(rule.hostname) : "";
+  if (!hostname) return null;
+
+  return {
+    id: typeof rule?.id === "string" && rule.id.trim()
+      ? rule.id.trim()
+      : `${hostname}:${typeof rule?.pathname === "string" ? normalizePathname(rule.pathname) : ""}:${index}`,
+    hostname,
+    pathname: typeof rule?.pathname === "string" && rule.pathname.trim()
+      ? normalizePathname(rule.pathname)
+      : null,
+    override: normalizeOverrideProfile(rule?.override),
+  };
+}
+
+function normalizeOverride(override?: IconPackConfigEmojiOverride | null): EmojiOverride {
+  const hasModernShape = override != null && ("default" in override || "rules" in override);
+  return {
+    default: hasModernShape
+      ? normalizeOverrideProfile(override.default)
+      : normalizeOverrideProfile(override),
+    rules: Array.isArray(override?.rules)
+      ? override.rules
+          .map((rule, index) => normalizeRule(rule, index))
+          .filter((rule): rule is EmojiOverrideRule => rule != null)
+      : [],
+  };
+}
+
+function isDefaultOverrideProfile(override: EmojiOverrideProfile): boolean {
   return !override.disabled
     && override.name == null
     && override.aliases.length === 0
     && override.nativeEmojis.length === 0;
+}
+
+function isDefaultOverride(override: EmojiOverride): boolean {
+  return isDefaultOverrideProfile(override.default)
+    && override.rules.length === 0;
 }
 
 export function buildIconPackConfig(params: {

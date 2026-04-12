@@ -3,6 +3,7 @@ import {
   getSource,
   addSource,
   updateSource,
+  reorderSources,
   removeSource,
   getSettings,
   getEmojiOverrides,
@@ -26,7 +27,14 @@ import {
   resolveAllEmojis,
 } from "@/lib/slack";
 import { preCacheImages, clearImageCache } from "@/lib/emoji-cache";
-import type { EmojiSource, ExtensionStatus, SlackSource, SourceSummary, EmojiMap } from "@/lib/types";
+import type {
+  DuplicateEmojiInfo,
+  EmojiMap,
+  EmojiSource,
+  ExtensionStatus,
+  SlackSource,
+  SourceSummary,
+} from "@/lib/types";
 import { DEFAULT_SOURCE_DOMAIN_FILTER } from "@/lib/types";
 import predefinedExclusionsRaw from "@/excluded-domains.txt?raw";
 
@@ -342,25 +350,39 @@ async function getStatus(): Promise<ExtensionStatus> {
     getEmojiOverrides(),
   ]);
   let totalEmojiCount = 0;
-  const allNames = new Set<string>();
+  const duplicateTracker = new Map<string, Set<string>>();
 
   const summaries = sources.map((s) => {
     const summary = summarizeSource(s, overrides);
     totalEmojiCount += summary.effectiveEmojiCount;
     for (const entry of getEffectiveEmojiEntriesForSource(s, overrides)) {
-      allNames.add(entry.primaryName);
+      const trackName = (name: string) => {
+        const sourceNames = duplicateTracker.get(name) ?? new Set<string>();
+        sourceNames.add(summary.name);
+        duplicateTracker.set(name, sourceNames);
+      };
+
+      trackName(entry.primaryName);
       for (const alias of entry.aliases) {
-        allNames.add(alias);
+        trackName(alias);
       }
       for (const nativeEmoji of entry.nativeEmojis) {
-        allNames.add(nativeEmoji);
+        trackName(nativeEmoji);
       }
     }
     return summary;
   });
-  const duplicateCount = totalEmojiCount - allNames.size;
 
-  return { sources: summaries, totalEmojiCount, duplicateCount };
+  const duplicateEmojis: DuplicateEmojiInfo[] = Array.from(duplicateTracker.entries())
+    .filter(([, sourceNames]) => sourceNames.size > 1)
+    .map(([name, sourceNames]) => ({
+      name,
+      sourceNames: Array.from(sourceNames).sort((a, b) => a.localeCompare(b)),
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const duplicateCount = duplicateEmojis.length;
+
+  return { sources: summaries, totalEmojiCount, duplicateCount, duplicateEmojis };
 }
 
 async function refreshStaleSlackSources(): Promise<void> {
@@ -445,6 +467,17 @@ export default defineBackground(() => {
           ...s,
           name: message.name,
         }) as EmojiSource)
+          .then(() => sendResponse({ success: true }))
+          .catch((err) =>
+            sendResponse({
+              success: false,
+              error: err instanceof Error ? err.message : "Unknown error",
+            }),
+          );
+        return true;
+
+      case "REORDER_SOURCES":
+        reorderSources(message.sourceIds)
           .then(() => sendResponse({ success: true }))
           .catch((err) =>
             sendResponse({

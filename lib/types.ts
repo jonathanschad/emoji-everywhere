@@ -2,11 +2,23 @@ export interface EmojiMap {
   [name: string]: string;
 }
 
-export interface EmojiOverride {
+export interface EmojiOverrideProfile {
   disabled: boolean;
   name: string | null;
   aliases: string[];
   nativeEmojis: string[];
+}
+
+export interface EmojiOverrideRule {
+  id: string;
+  hostname: string;
+  pathname: string | null;
+  override: EmojiOverrideProfile;
+}
+
+export interface EmojiOverride {
+  default: EmojiOverrideProfile;
+  rules: EmojiOverrideRule[];
 }
 
 export interface EmojiOverridesBySource {
@@ -23,6 +35,7 @@ export interface EffectiveEmojiEntry {
   nativeEmojis: string[];
   enabled: boolean;
   ref: string;
+  override: EmojiOverride;
 }
 
 export type SourceDomainFilterMode = "allow" | "deny";
@@ -72,10 +85,16 @@ export interface SourceSummary {
   error: string | null;
 }
 
+export interface DuplicateEmojiInfo {
+  name: string;
+  sourceNames: string[];
+}
+
 export interface ExtensionStatus {
   sources: SourceSummary[];
   totalEmojiCount: number;
   duplicateCount: number;
+  duplicateEmojis: DuplicateEmojiInfo[];
 }
 
 export type MessageType =
@@ -83,6 +102,7 @@ export type MessageType =
   | { type: "FETCH_EMOJIS"; sourceId: string }
   | { type: "FETCH_ALL_EMOJIS" }
   | { type: "GET_STATUS" }
+  | { type: "REORDER_SOURCES"; sourceIds: string[] }
   | { type: "REMOVE_SOURCE"; sourceId: string }
   | { type: "RENAME_SOURCE"; sourceId: string; name: string }
   | {
